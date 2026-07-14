@@ -10,3 +10,7 @@ narrastate-runtime = { path = "../narrastate-runtime" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true

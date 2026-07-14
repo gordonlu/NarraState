@@ -86,13 +86,13 @@ proptest! {
         for p in &phases {
             if *p == from { break; }
             if state.phase.can_transition_to(*p) {
-                let _ = state.set_phase(*p, turn.clone());
+                let _ = state.set_phase(*p, turn);
             }
         }
         // If state didn't reach `from`, skip
         if state.phase != from { return Ok(()); }
 
-        let result = state.set_phase(to, turn.clone());
+        let result = state.set_phase(to, turn);
         if allowed {
             prop_assert!(result.is_ok(), "Legal transition {from:?} -> {to:?} should be OK");
         } else {

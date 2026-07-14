@@ -1,2 +1,5 @@
-// Storage crate — SQLite persistence.
-// Placeholder for Phase 5.
+pub mod migrations;
+pub mod repository;
+
+pub use narrastate_runtime::ports::StorageError;
+pub use repository::SqliteRepository;

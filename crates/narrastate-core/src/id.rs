@@ -40,7 +40,17 @@ macro_rules! string_id {
 macro_rules! uuid_id {
     ($name:ident, $doc:expr) => {
         #[derive(
-            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            Serialize,
+            Deserialize,
+            JsonSchema,
         )]
         #[doc = $doc]
         pub struct $name(pub Uuid);

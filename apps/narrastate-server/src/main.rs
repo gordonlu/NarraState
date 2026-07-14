@@ -1,7 +1,12 @@
+mod api;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::process;
+use std::sync::Arc;
+
+use narrastate_runtime::ports::Repository;
 
 use narrastate_core::case::CaseDefinition;
 use narrastate_core::character::CharacterRuntimeState;
@@ -11,25 +16,130 @@ use narrastate_core::phase::InterrogationPhase;
 use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone, TransitionTuning};
 use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
 use narrastate_runtime::{DialoguePlanner, TransitionEngine};
+use narrastate_storage::SqliteRepository;
+use tokio::sync::RwLock;
+
+use crate::api::{router, AppState};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: narrastate-server <command> [args...]");
         eprintln!("Commands:");
-        eprintln!("  validate <path>    Validate a case.json file");
-        eprintln!("  play --case <path> [--mock]  Interactive interrogation");
+        eprintln!("  validate <path>        Validate a case.json file");
+        eprintln!("  play --case <path>     Interactive interrogation (mock)");
+        eprintln!("  serve [--port <port>] [--db <path>] [--cases <dir>]  HTTP server");
         process::exit(1);
     }
 
     match args[1].as_str() {
         "validate" | "validate-case" => cmd_validate(&args[2..]),
         "play" => cmd_play(&args[2..]),
+        "serve" | "server" => {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+            rt.block_on(cmd_serve(&args[2..]));
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             process::exit(1);
         }
     }
+}
+
+// ── Serve subcommand ──────────────────────────────────────────────────────
+
+async fn cmd_serve(args: &[String]) {
+    let mut port = 8080u16;
+    let mut db_path = "narrastate.db".to_string();
+    let mut cases_dir = "cases".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                port = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(8080);
+            }
+            "--db" => {
+                i += 1;
+                db_path = args
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "narrastate.db".into());
+            }
+            "--cases" => {
+                i += 1;
+                cases_dir = args.get(i).cloned().unwrap_or_else(|| "cases".into());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    // Open repository
+    let repo = match SqliteRepository::new(&db_path) {
+        Ok(r) => {
+            tracing::info!("Connected to database: {db_path}");
+            r
+        }
+        Err(e) => {
+            eprintln!("Failed to open database: {e}");
+            process::exit(1);
+        }
+    };
+
+    // Load cases from directory
+    if let Ok(entries) = fs::read_dir(&cases_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                match fs::read_to_string(&path) {
+                    Ok(json) => match serde_json::from_str::<CaseDefinition>(&json) {
+                        Ok(case) => {
+                            if let Err(e) = repo.save_case(&case) {
+                                tracing::warn!("Failed to save case {}: {e}", case.id);
+                            } else {
+                                tracing::info!("Loaded case: {} ({})", case.title, case.id);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse {}: {e}", path.display());
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("Failed to read {}: {e}", path.display());
+                    }
+                }
+            }
+        }
+    } else {
+        tracing::warn!("Cases directory '{cases_dir}' not found");
+    }
+
+    let state = Arc::new(RwLock::new(AppState::new(Box::new(repo))));
+    let app = router(state);
+
+    let addr = format!("0.0.0.0:{port}");
+    tracing::info!("NarraState server starting on {addr}");
+
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to bind {addr}: {e}");
+            process::exit(1);
+        });
+
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        eprintln!("Server error: {e}");
+        process::exit(1);
+    });
 }
 
 fn cmd_validate(args: &[String]) {

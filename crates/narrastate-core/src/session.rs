@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionState {
@@ -57,4 +58,27 @@ pub enum AccusationResult {
     CorrectButInsufficient,
     CaseProvenWithoutConfession,
     CaseProvenWithConfession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NarrativeEvent {
+    pub event_id: Uuid,
+    pub session_id: SessionId,
+    pub turn_id: Option<TurnId>,
+    pub sequence: u64,
+    pub event_type: NarrativeEventKind,
+    pub schema_version: u32,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum NarrativeEventKind {
+    SessionCreated,
+    TurnProcessed,
+    EvidenceConfronted,
+    AccusationMade,
+    PhaseChanged,
+    DisclosureRevealed,
+    SessionResolved,
+    SnapshotTaken,
 }

@@ -100,7 +100,7 @@ fn test_character_state_phase_transition_valid() {
     let mut state = CharacterRuntimeState::new(50);
     let turn_id = TurnId::new();
     assert!(state
-        .set_phase(InterrogationPhase::Guarded, turn_id.clone())
+        .set_phase(InterrogationPhase::Guarded, turn_id)
         .is_ok());
     assert_eq!(state.phase, InterrogationPhase::Guarded);
     assert_eq!(state.last_transition_turn, Some(turn_id));
@@ -781,7 +781,7 @@ fn test_case_definition_serde_roundtrip() {
 fn test_session_state_new_defaults() {
     let sid = SessionId::new();
     let state = SessionState {
-        session_id: sid.clone(),
+        session_id: sid,
         case_id: CaseId::from("test"),
         status: SessionStatus::Active,
         current_turn: 0,

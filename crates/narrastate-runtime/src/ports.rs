@@ -1,3 +1,6 @@
+use narrastate_core::case::CaseDefinition;
+use narrastate_core::id::{CaseId, SessionId};
+use narrastate_core::session::{NarrativeEvent, SessionState};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -83,4 +86,50 @@ pub trait LlmProvider: Send + Sync {
         messages: &[ChatMessage],
         response_schema: &serde_json::Value,
     ) -> Result<serde_json::Value, ProviderError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+pub enum StorageError {
+    #[error("Not found: {0}")]
+    NotFound(String),
+    #[error("Revision conflict: expected {expected}, got {actual}")]
+    RevisionConflict { expected: u64, actual: u64 },
+    #[error("Database error: {0}")]
+    Database(String),
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+    #[error("Migration error: {0}")]
+    Migration(String),
+    #[error("Constraint violation: {0}")]
+    Constraint(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+pub trait Repository: Send + Sync {
+    fn create_session(&self, session: &SessionState) -> Result<(), StorageError>;
+    fn load_session(&self, session_id: &SessionId) -> Result<SessionState, StorageError>;
+    fn update_session(&self, session: &SessionState) -> Result<(), StorageError>;
+
+    fn save_case(&self, case: &CaseDefinition) -> Result<(), StorageError>;
+    fn load_case(&self, case_id: &CaseId) -> Result<CaseDefinition, StorageError>;
+    fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError>;
+
+    fn append_events(
+        &self,
+        session_id: &SessionId,
+        events: &[NarrativeEvent],
+    ) -> Result<(), StorageError>;
+    fn load_events(&self, session_id: &SessionId) -> Result<Vec<NarrativeEvent>, StorageError>;
+
+    fn save_snapshot(
+        &self,
+        session_id: &SessionId,
+        revision: u64,
+        state: &SessionState,
+    ) -> Result<(), StorageError>;
+    fn load_latest_snapshot(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<(u64, SessionState)>, StorageError>;
 }
