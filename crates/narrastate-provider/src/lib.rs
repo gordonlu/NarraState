@@ -1,2 +1,4 @@
-// Provider crate — implements LLM provider trait.
-// Placeholder for Phase 4.
+pub mod interpreter;
+pub mod openai_compatible;
+pub mod renderer;
+pub mod validator;
