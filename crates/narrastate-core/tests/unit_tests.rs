@@ -691,7 +691,7 @@ fn test_transition_tuning_defaults_in_valid_range() {
     assert!((t.exclusivity_weight - 0.20).abs() < f32::EPSILON);
     assert!((t.proposition_match_weight - 0.15).abs() < f32::EPSILON);
     assert!((t.novelty_multiplier_first - 1.0).abs() < f32::EPSILON);
-    assert!((t.novelty_multiplier_repeat - 0.25).abs() < f32::EPSILON);
+    assert!((t.novelty_multiplier_repeat - 0.0).abs() < f32::EPSILON);
     assert!((t.chain_bonus - 0.15).abs() < f32::EPSILON);
     assert!((t.min_interpretation_multiplier - 0.5).abs() < f32::EPSILON);
     assert!((t.max_interpretation_multiplier - 1.0).abs() < f32::EPSILON);

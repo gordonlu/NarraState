@@ -79,7 +79,7 @@ impl Default for TransitionTuning {
             exclusivity_weight: 0.20,
             proposition_match_weight: 0.15,
             novelty_multiplier_first: 1.0,
-            novelty_multiplier_repeat: 0.25,
+            novelty_multiplier_repeat: 0.0,
             chain_bonus: 0.15,
             min_interpretation_multiplier: 0.5,
             max_interpretation_multiplier: 1.0,
