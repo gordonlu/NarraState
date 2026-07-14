@@ -1,0 +1,532 @@
+{
+  "schema_version": "0.1",
+  "id": "rain-gallery",
+  "title": "雨夜画廊失窃案",
+  "summary": "一件密封待拍画作在闭馆后的二十分钟内从私人画廊消失。三名当晚在场人员各怀秘密，其中一人策划了盗窃。",
+  "locale": "zh-CN",
+  "required_case_elements": ["Identity", "Opportunity", "Action", "Intent"],
+  "entities": [
+    { "id": "luo-cheng", "name": "罗成", "kind": "person" },
+    { "id": "shen-an", "name": "沈安", "kind": "person" },
+    { "id": "lin-yue", "name": "林悦", "kind": "person" },
+    { "id": "control_room", "name": "控制室", "kind": "location" },
+    { "id": "gallery", "name": "画廊展厅", "kind": "location" },
+    { "id": "loading_area", "name": "装卸区", "kind": "location" },
+    { "id": "storage_room", "name": "储物间", "kind": "location" },
+    { "id": "painting", "name": "密封待拍画作", "kind": "object" },
+    { "id": "transport_box", "name": "画作运输箱", "kind": "object" }
+  ],
+  "facts": [
+    {
+      "id": "fact_gallery_closed",
+      "subject": "gallery",
+      "predicate": "closed_at",
+      "object": "21:40",
+      "truth": "True",
+      "visibility": "PublicAtStart",
+      "tags": ["time", "location"]
+    },
+    {
+      "id": "fact_painting_missing",
+      "subject": "painting",
+      "predicate": "is_missing",
+      "object": true,
+      "truth": "True",
+      "visibility": "PublicAtStart",
+      "tags": ["crime"]
+    },
+    {
+      "id": "fact_luo_assigned_cr",
+      "subject": "luo-cheng",
+      "predicate": "assigned_to",
+      "object": "control_room",
+      "truth": "True",
+      "visibility": "PublicAtStart",
+      "tags": ["background"]
+    },
+    {
+      "id": "fact_card_used_2147",
+      "subject": "luo-cheng",
+      "predicate": "used_card_at",
+      "object": "21:47",
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["evidence", "time"]
+    },
+    {
+      "id": "fact_sensor_cmd_2143",
+      "subject": "luo-cheng",
+      "predicate": "issued_sensor_command_at",
+      "object": "21:43",
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["evidence", "time"]
+    },
+    {
+      "id": "fact_mud_on_shoes",
+      "subject": "luo-cheng",
+      "predicate": "has_mud_on_shoes",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["evidence", "physical"]
+    },
+    {
+      "id": "fact_fiber_on_box",
+      "subject": "transport_box",
+      "predicate": "has_fiber_and_missing_button",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["evidence", "physical"]
+    },
+    {
+      "id": "fact_pawn_chat",
+      "subject": "luo-cheng",
+      "predicate": "contacted_pawn_shop",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["evidence", "motive"]
+    },
+    {
+      "id": "fact_luo_left_cr",
+      "subject": "luo-cheng",
+      "predicate": "left_control_room_between",
+      "object": "21:40_and_21:45",
+      "truth": "True",
+      "visibility": "Hidden",
+      "tags": ["truth", "action"]
+    },
+    {
+      "id": "fact_sensor_deactivated",
+      "subject": "luo-cheng",
+      "predicate": "deactivated_loading_sensor",
+      "object": true,
+      "truth": "True",
+      "visibility": "Hidden",
+      "tags": ["truth", "action"]
+    },
+    {
+      "id": "fact_painting_removed",
+      "subject": "painting",
+      "predicate": "removed_from_box",
+      "object": true,
+      "truth": "True",
+      "visibility": "Hidden",
+      "tags": ["truth", "action"]
+    },
+    {
+      "id": "fact_painting_hidden",
+      "subject": "painting",
+      "predicate": "hidden_in",
+      "object": "storage_room",
+      "truth": "True",
+      "visibility": "Hidden",
+      "tags": ["truth", "location"]
+    },
+    {
+      "id": "fact_luo_debt",
+      "subject": "luo-cheng",
+      "predicate": "has_debt",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["motive", "background"]
+    },
+    {
+      "id": "fact_shen_delayed",
+      "subject": "shen-an",
+      "predicate": "delayed_condition_report",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["secret", "red-herring"]
+    },
+    {
+      "id": "fact_lin_repaired",
+      "subject": "lin-yue",
+      "predicate": "repaired_frame_unauthorized",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["secret", "red-herring"]
+    },
+    {
+      "id": "fact_shen_alibi",
+      "subject": "shen-an",
+      "predicate": "was_with_security_guard",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["alibi"]
+    },
+    {
+      "id": "fact_lin_alibi",
+      "subject": "lin-yue",
+      "predicate": "was_with_intern",
+      "object": true,
+      "truth": "True",
+      "visibility": "Discoverable",
+      "tags": ["alibi"]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev_card_log",
+      "title": "复制门禁卡使用记录",
+      "description": "画廊安保系统日志显示，复制门禁卡在 21:47 被用于进入后区。该卡为安保主管专用卡。",
+      "supports": [],
+      "contradicts": ["claim_never_left"],
+      "elements": ["Opportunity"],
+      "reliability": 0.9,
+      "directness": 0.85,
+      "exclusivity": 0.6,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_sensor_cmd",
+      "title": "传感器维护命令",
+      "description": "21:43 由安保终端发出，临时关闭装卸区运动传感器。命令账号归属罗成。",
+      "supports": [],
+      "contradicts": ["claim_innocent"],
+      "elements": ["Means", "Action"],
+      "reliability": 0.8,
+      "directness": 0.75,
+      "exclusivity": 0.7,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_mud_track",
+      "title": "红色湿泥",
+      "description": "罗成鞋底提取的红色湿泥与装卸区地面土壤成分一致。",
+      "supports": [],
+      "contradicts": ["claim_never_left", "claim_innocent"],
+      "elements": ["Action"],
+      "reliability": 0.7,
+      "directness": 0.6,
+      "exclusivity": 0.5,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_fiber",
+      "title": "制服纤维与缺失纽扣",
+      "description": "在画作运输箱边缘发现的深蓝色制服纤维和一颗缺失纽扣，与罗成制服匹配。",
+      "supports": [],
+      "contradicts": ["claim_innocent"],
+      "elements": ["Action", "Identity"],
+      "reliability": 0.85,
+      "directness": 0.9,
+      "exclusivity": 0.8,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_pawn_contact",
+      "title": "典当行联系人消息",
+      "description": "从罗成手机恢复的聊天记录显示，他在案发前一周联系了典当行询价，案发当天下午有确认消息。",
+      "supports": [],
+      "contradicts": ["claim_innocent"],
+      "elements": ["Intent"],
+      "reliability": 0.6,
+      "directness": 0.5,
+      "exclusivity": 0.3,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_shen_timeline",
+      "title": "沈安的不在场证明",
+      "description": "闭馆后沈安与画廊保安在入口处交谈约15分钟，保安证实其未进入后区。",
+      "supports": [],
+      "contradicts": [],
+      "elements": [],
+      "reliability": 0.85,
+      "directness": 0.9,
+      "exclusivity": 0.5,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    },
+    {
+      "id": "ev_lin_timeline",
+      "title": "林悦的不在场证明",
+      "description": "闭馆后林悦与实习生在修复室整理记录至21:50，实习生证实其未离开。",
+      "supports": [],
+      "contradicts": [],
+      "elements": [],
+      "reliability": 0.8,
+      "directness": 0.85,
+      "exclusivity": 0.5,
+      "discoverable_by": [{ "type": "StartingEvidence" }]
+    }
+  ],
+  "characters": [
+    {
+      "id": "luo-cheng",
+      "name": "罗成",
+      "role": "安保主管",
+      "public_profile": "负责画廊门禁系统、夜间巡查和报警响应。入职三年，工作表现良好。",
+      "personality": {
+        "traits": ["冷静", "有计划性", "善于掩饰"],
+        "speech_style": null
+      },
+      "goals": [
+        {
+          "description": "隐瞒盗窃行为，避免暴露债务问题",
+          "priority": 10
+        }
+      ],
+      "knowledge": [
+        "fact_gallery_closed",
+        "fact_painting_missing",
+        "fact_luo_assigned_cr",
+        "fact_card_used_2147",
+        "fact_sensor_cmd_2143",
+        "fact_mud_on_shoes",
+        "fact_fiber_on_box",
+        "fact_pawn_chat",
+        "fact_luo_left_cr",
+        "fact_sensor_deactivated",
+        "fact_painting_removed",
+        "fact_painting_hidden",
+        "fact_luo_debt"
+      ],
+      "initial_beliefs": [
+        {
+          "proposition": {
+            "subject": "luo-cheng",
+            "predicate": "can_conceal_theft",
+            "object": true
+          },
+          "confidence": 80,
+          "source": { "type": "Default" }
+        }
+      ],
+      "claims": [
+        {
+          "id": "claim_never_left",
+          "owner": "luo-cheng",
+          "proposition": {
+            "subject": "luo-cheng",
+            "predicate": "was_in",
+            "object": "control_room"
+          },
+          "kind": "Lie",
+          "available_from": "Calm",
+          "invalidated_by": ["ev_card_log", "ev_mud_track"],
+          "fallback_claim": null
+        },
+        {
+          "id": "claim_innocent",
+          "owner": "luo-cheng",
+          "proposition": {
+            "subject": "luo-cheng",
+            "predicate": "has_no_involvement",
+            "object": true
+          },
+          "kind": "Lie",
+          "available_from": "Calm",
+          "invalidated_by": ["ev_sensor_cmd", "ev_fiber", "ev_pawn_contact"],
+          "fallback_claim": null
+        }
+      ],
+      "defenses": [
+        {
+          "id": "denial",
+          "kind": "Denial",
+          "usable_phases": ["Calm", "Guarded", "Defensive"],
+          "max_uses": 3,
+          "applicable_claims": [],
+          "fallback_strategy": null,
+          "style_prompt": null
+        },
+        {
+          "id": "innocent_explain",
+          "kind": "InnocentExplanation",
+          "usable_phases": ["Pressured", "Cornered"],
+          "max_uses": 2,
+          "applicable_claims": [],
+          "fallback_strategy": null,
+          "style_prompt": null
+        }
+      ],
+      "disclosure_graph": {
+        "nodes": [
+          {
+            "id": "d1_presence",
+            "kind": "Presence",
+            "reveals": ["fact_luo_left_cr"],
+            "prerequisites": [],
+            "min_phase": "Guarded",
+            "response_intent": "PartialAdmission"
+          },
+          {
+            "id": "d2_access",
+            "kind": "Access",
+            "reveals": ["fact_card_used_2147"],
+            "prerequisites": [
+              {
+                "disclosure": "d1_presence"
+              }
+            ],
+            "min_phase": "Defensive",
+            "response_intent": "PartialAdmission"
+          },
+          {
+            "id": "d3_means",
+            "kind": "Means",
+            "reveals": ["fact_sensor_deactivated"],
+            "prerequisites": [
+              {
+                "disclosure": "d2_access"
+              }
+            ],
+            "min_phase": "Pressured",
+            "response_intent": "PartialAdmission"
+          },
+          {
+            "id": "d4_action",
+            "kind": "FullAction",
+            "reveals": ["fact_painting_removed", "fact_painting_hidden"],
+            "prerequisites": [
+              {
+                "disclosure": "d3_means"
+              }
+            ],
+            "min_phase": "Cornered",
+            "response_intent": "PartialAdmission"
+          },
+          {
+            "id": "d5_intent",
+            "kind": "Intent",
+            "reveals": ["fact_luo_debt", "fact_pawn_chat"],
+            "prerequisites": [
+              {
+                "disclosure": "d4_action"
+              }
+            ],
+            "min_phase": "ConfessionEligible",
+            "response_intent": "PartialAdmission"
+          },
+          {
+            "id": "d6_confession",
+            "kind": "Confession",
+            "reveals": ["fact_luo_left_cr", "fact_sensor_deactivated", "fact_painting_removed", "fact_painting_hidden", "fact_luo_debt", "fact_pawn_chat"],
+            "prerequisites": [
+              {
+                "disclosure": "d5_intent"
+              }
+            ],
+            "min_phase": "ConfessionEligible",
+            "response_intent": "FullAdmission"
+          }
+        ]
+      },
+      "resilience": 60
+    },
+    {
+      "id": "shen-an",
+      "name": "沈安",
+      "role": "策展人",
+      "public_profile": "负责画作估值与保险评估。与画作所有人就保额有争议。",
+      "personality": {
+        "traits": ["紧张", "注重细节", "规避责任"],
+        "speech_style": null
+      },
+      "goals": [
+        {
+          "description": "掩饰擅自推迟状况报告的事实",
+          "priority": 5
+        }
+      ],
+      "knowledge": [
+        "fact_gallery_closed",
+        "fact_painting_missing",
+        "fact_shen_delayed",
+        "fact_shen_alibi"
+      ],
+      "initial_beliefs": [],
+      "claims": [],
+      "defenses": [
+        {
+          "id": "hr_denial",
+          "kind": "Denial",
+          "usable_phases": ["Calm", "Guarded", "Defensive"],
+          "max_uses": 5,
+          "applicable_claims": [],
+          "fallback_strategy": null,
+          "style_prompt": null
+        }
+      ],
+      "disclosure_graph": {
+        "nodes": [
+          {
+            "id": "hr1_secret",
+            "kind": "PeripheralSecret",
+            "reveals": ["fact_shen_delayed"],
+            "prerequisites": [],
+            "min_phase": "Defensive",
+            "response_intent": "Answer"
+          }
+        ]
+      },
+      "resilience": 40
+    },
+    {
+      "id": "lin-yue",
+      "name": "林悦",
+      "role": "修复师",
+      "public_profile": "负责画作状况检查和紧急修复。当天最后接触画作的人员。",
+      "personality": {
+        "traits": ["内向", "负责", "易焦虑"],
+        "speech_style": null
+      },
+      "goals": [
+        {
+          "description": "隐瞒未经授权修复画框的行为",
+          "priority": 5
+        }
+      ],
+      "knowledge": [
+        "fact_gallery_closed",
+        "fact_painting_missing",
+        "fact_lin_repaired",
+        "fact_lin_alibi"
+      ],
+      "initial_beliefs": [],
+      "claims": [],
+      "defenses": [
+        {
+          "id": "lin_denial",
+          "kind": "Denial",
+          "usable_phases": ["Calm", "Guarded", "Defensive"],
+          "max_uses": 5,
+          "applicable_claims": [],
+          "fallback_strategy": null,
+          "style_prompt": null
+        }
+      ],
+      "disclosure_graph": {
+        "nodes": [
+          {
+            "id": "hr2_secret",
+            "kind": "PeripheralSecret",
+            "reveals": ["fact_lin_repaired"],
+            "prerequisites": [],
+            "min_phase": "Defensive",
+            "response_intent": "Answer"
+          }
+        ]
+      },
+      "resilience": 40
+    }
+  ],
+  "initial_player_knowledge": {
+    "fact_ids": [
+      "fact_gallery_closed",
+      "fact_painting_missing",
+      "fact_luo_assigned_cr"
+    ],
+    "evidence_ids": []
+  },
+  "ending": {
+    "epilogue": "罗成因盗窃被警方带走。画作在画廊储物间被找回，未受损坏。沈安因擅自推迟状况报告受到内部处分。林悦因未经授权修复画框受到警告。"
+  }
+}
