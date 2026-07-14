@@ -96,3 +96,7 @@ string_id!(PropositionRef, "Reference to a proposition by ID.");
 
 uuid_id!(SessionId, "UUID for a game session.");
 uuid_id!(TurnId, "UUID for a single turn.");
+uuid_id!(
+    ClientActionId,
+    "Client-generated UUID used as an idempotency key."
+);

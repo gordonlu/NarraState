@@ -1,15 +1,21 @@
 use crate::character::CharacterRuntimeState;
-use crate::id::{CaseId, CharacterId, EvidenceId, FactId, SessionId, TurnId};
+use crate::disclosure::DialogueAct;
+use crate::id::{
+    CaseId, CharacterId, ClaimId, ClientActionId, DisclosureId, EvidenceId, FactId, SessionId,
+    TurnId,
+};
+use crate::transition::{InterpretedAction, TransitionReason};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionState {
     pub session_id: SessionId,
     pub case_id: CaseId,
+    #[serde(default)]
+    pub mode: SessionMode,
     pub status: SessionStatus,
     pub current_turn: u32,
     pub active_character: Option<CharacterId>,
@@ -19,6 +25,14 @@ pub struct SessionState {
     pub conversation: Vec<DialogueEntry>,
     pub accusations: Vec<Accusation>,
     pub revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMode {
+    #[default]
+    Mock,
+    Llm,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -68,17 +82,68 @@ pub struct NarrativeEvent {
     pub sequence: u64,
     pub event_type: NarrativeEventKind,
     pub schema_version: u32,
-    pub payload: serde_json::Value,
+    pub payload: NarrativeEventPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NarrativeEventPayload {
+    SessionCreated {
+        state: Box<SessionState>,
+    },
+    PlayerActionAccepted {
+        client_action_id: ClientActionId,
+        target: CharacterId,
+        attached_evidence: Vec<EvidenceId>,
+    },
+    ActionInterpreted {
+        action: InterpretedAction,
+    },
+    EvidencePresented {
+        evidence_ids: Vec<EvidenceId>,
+    },
+    ClaimContradicted {
+        claim_ids: Vec<ClaimId>,
+    },
+    CharacterStateChanged {
+        character_id: CharacterId,
+        reason: Option<TransitionReason>,
+    },
+    DisclosureUnlocked {
+        disclosure_ids: Vec<DisclosureId>,
+    },
+    DialoguePlanned {
+        act: DialogueAct,
+    },
+    DialogueRendered,
+    TurnCommitted {
+        client_action_id: ClientActionId,
+        state: Box<SessionState>,
+    },
+    AccusationSubmitted {
+        state: Box<SessionState>,
+    },
+    CaseResolved {
+        state: Box<SessionState>,
+    },
+    SnapshotTaken {
+        revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum NarrativeEventKind {
     SessionCreated,
-    TurnProcessed,
-    EvidenceConfronted,
-    AccusationMade,
-    PhaseChanged,
-    DisclosureRevealed,
-    SessionResolved,
+    PlayerActionAccepted,
+    ActionInterpreted,
+    EvidencePresented,
+    ClaimContradicted,
+    CharacterStateChanged,
+    DisclosureUnlocked,
+    DialoguePlanned,
+    DialogueRendered,
+    TurnCommitted,
+    AccusationSubmitted,
+    CaseResolved,
     SnapshotTaken,
 }

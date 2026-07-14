@@ -10,16 +10,18 @@ pub struct MockInterpreter;
 impl MockInterpreter {
     pub fn interpret(&self, text: &str, attached_evidence: &[EvidenceId]) -> InterpretedAction {
         let lower = text.to_lowercase();
-        let intent = if lower.contains("accuse")
+        let intent = if !attached_evidence.is_empty() {
+            PlayerIntent::PresentEvidence
+        } else if lower.contains("accuse")
             || lower.contains("指控")
             || lower.contains("是你偷的")
+            || lower.contains("是你做的")
+            || lower.contains("认罪")
         {
             PlayerIntent::Accuse
         } else if lower.contains("challenge") || lower.contains("证据") || lower.contains("证明")
         {
             PlayerIntent::Challenge
-        } else if !attached_evidence.is_empty() {
-            PlayerIntent::PresentEvidence
         } else if lower.contains("clarify") || lower.contains("解释") {
             PlayerIntent::Clarify
         } else {
@@ -52,29 +54,23 @@ pub struct MockRenderer;
 impl MockRenderer {
     pub fn render(&self, plan: &DialoguePlan) -> MockUtterance {
         let utterance = match plan.act {
-            narrastate_core::DialogueAct::Answer => "I am answering your question.".to_string(),
-            narrastate_core::DialogueAct::Deny => "That's not true. I deny it.".to_string(),
-            narrastate_core::DialogueAct::Evade => "I don't recall that clearly.".to_string(),
-            narrastate_core::DialogueAct::Reframe => {
-                "Let me explain the situation differently.".to_string()
-            }
+            narrastate_core::DialogueAct::Answer => "我会回答你的问题。".to_string(),
+            narrastate_core::DialogueAct::Deny => "这不是真的，我否认这一点。".to_string(),
+            narrastate_core::DialogueAct::Evade => "这件事我记得不太清楚。".to_string(),
+            narrastate_core::DialogueAct::Reframe => "事情并不是你说的那样。".to_string(),
             narrastate_core::DialogueAct::ChallengeEvidence => {
-                "That evidence doesn't prove anything.".to_string()
+                "这份证据还不能证明你的结论。".to_string()
             }
-            narrastate_core::DialogueAct::ShiftBlame => {
-                "Someone else must have done it.".to_string()
-            }
+            narrastate_core::DialogueAct::ShiftBlame => "你应该再查查其他人。".to_string(),
             narrastate_core::DialogueAct::PartialAdmission => {
                 if let Some(ref _did) = plan.newly_revealed {
-                    "Alright, I admit that much.".to_string()
+                    "好吧，这一点我承认。".to_string()
                 } else {
-                    "I admit to some involvement, but not everything.".to_string()
+                    "我承认有所牵涉，但事情不是你想的那样。".to_string()
                 }
             }
-            narrastate_core::DialogueAct::FullAdmission => "I confess. I did it.".to_string(),
-            narrastate_core::DialogueAct::AskForClarification => {
-                "What exactly are you asking?".to_string()
-            }
+            narrastate_core::DialogueAct::FullAdmission => "我认罪，是我做的。".to_string(),
+            narrastate_core::DialogueAct::AskForClarification => "你具体想问什么？".to_string(),
             narrastate_core::DialogueAct::Silence => "...".to_string(),
         };
 

@@ -1,54 +1,91 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
-
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use narrastate_core::case::CaseDefinition;
 use narrastate_core::character::CharacterRuntimeState;
-use narrastate_core::evidence::EvidenceDefinition;
-use narrastate_core::id::{CaseId, CharacterId, EvidenceId, SessionId, TurnId};
-use narrastate_core::phase::InterrogationPhase;
+use narrastate_core::evidence::{DiscoveryRule, EvidenceDefinition};
+use narrastate_core::fact::{Fact, FactVisibility};
+use narrastate_core::id::{CaseId, CharacterId, ClientActionId, EvidenceId, SessionId, TurnId};
 use narrastate_core::session::{
-    AccusationResult, DialogueEntry, DialogueSpeaker, NarrativeEvent, NarrativeEventKind,
-    SessionState, SessionStatus,
+    Accusation, AccusationResult, DialogueEntry, DialogueSpeaker, NarrativeEvent,
+    NarrativeEventKind, NarrativeEventPayload, SessionMode, SessionState, SessionStatus,
 };
-use narrastate_core::transition::TransitionTuning;
+use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone, TransitionTuning};
+use narrastate_provider::interpreter::LlmInterpreter;
+use narrastate_provider::openai_compatible::OpenAiProvider;
+use narrastate_provider::renderer::{LlmRenderer, RendererStatus};
+use narrastate_runtime::evaluator::covered_elements;
 use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
-use narrastate_runtime::ports::{Repository, StorageError};
+use narrastate_runtime::ports::{
+    ChatMessage, CommitOutcome, LlmCallMetadata, LlmConfig, LlmProvider, ProviderError,
+    ProviderSettings, Repository, StorageError, TokenUsage,
+};
 use narrastate_runtime::{DialoguePlanner, TransitionEngine};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 pub struct AppState {
-    pub repo: Box<dyn Repository>,
-    pub engine: TransitionEngine,
-    pub planner: DialoguePlanner,
-    pub interpreter: MockInterpreter,
-    pub renderer: MockRenderer,
+    pub repo: Arc<dyn Repository>,
+    engine: TransitionEngine,
+    planner: DialoguePlanner,
+    mock_interpreter: MockInterpreter,
+    mock_renderer: MockRenderer,
 }
 
 impl AppState {
-    pub fn new(repo: Box<dyn Repository>) -> Self {
+    pub fn new(repo: Arc<dyn Repository>) -> Self {
         Self {
             repo,
             engine: TransitionEngine::new(TransitionTuning::default()),
             planner: DialoguePlanner,
-            interpreter: MockInterpreter,
-            renderer: MockRenderer,
+            mock_interpreter: MockInterpreter,
+            mock_renderer: MockRenderer,
         }
+    }
+
+    async fn llm_provider(&self) -> Result<(Arc<dyn LlmProvider>, ProviderSettings), ApiError> {
+        let settings = self
+            .repo
+            .load_provider_settings()
+            .await
+            .map_err(ApiError::from_storage)?
+            .unwrap_or(ProviderSettings {
+                base_url: std::env::var("NARRASTATE_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+                model: std::env::var("NARRASTATE_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+            });
+        let api_key = std::env::var("NARRASTATE_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .map_err(|_| {
+                ApiError::validation("LLM mode requires NARRASTATE_API_KEY or OPENAI_API_KEY")
+            })?;
+        let provider = OpenAiProvider::new(LlmConfig {
+            base_url: settings.base_url.clone(),
+            model: settings.model.clone(),
+            api_key,
+            ..LlmConfig::default()
+        })
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok((Arc::new(provider), settings))
     }
 }
 
-pub fn router(state: Arc<RwLock<AppState>>) -> Router {
+pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/health", get(health))
+        .route("/api/v1/config/public", get(public_config))
+        .route("/api/v1/config/test-provider", post(test_provider))
         .route("/api/v1/cases", get(list_cases))
         .route("/api/v1/cases/{case_id}", get(get_case))
         .route("/api/v1/cases/validate", post(validate_case))
@@ -73,625 +110,1387 @@ pub fn router(state: Arc<RwLock<AppState>>) -> Router {
         .with_state(state)
 }
 
-// ── Models ────────────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub version: String,
+#[derive(Debug, Serialize)]
+pub struct ProblemDetails {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    title: &'static str,
+    status: u16,
+    detail: String,
 }
 
-#[derive(Serialize)]
-pub struct CaseSummary {
-    pub id: CaseId,
-    pub title: String,
-    pub summary: String,
-    pub locale: String,
-    pub character_count: usize,
-    pub evidence_count: usize,
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    title: &'static str,
+    detail: String,
 }
 
-#[derive(Serialize)]
-pub struct SessionResponse {
-    pub session_id: SessionId,
-    pub case_id: CaseId,
-    pub status: SessionStatus,
-    pub current_turn: u32,
-    pub active_character: Option<CharacterId>,
-    pub phase: Option<InterrogationPhase>,
-    pub stress: Option<u8>,
-    pub composure: Option<u8>,
-    pub trust: Option<i8>,
-    pub defense_budget: Option<u8>,
-    pub discovered_facts: Vec<String>,
-    pub discovered_evidence: Vec<String>,
-    pub conversation: Vec<DialogueEntry>,
-    pub accusations: Vec<narrastate_core::session::Accusation>,
-    pub revision: u64,
-}
-
-impl From<SessionState> for SessionResponse {
-    fn from(s: SessionState) -> Self {
-        let (phase, stress, composure, trust, defense_budget) = match s
-            .active_character
-            .as_ref()
-            .and_then(|cid| s.character_states.get(cid))
-        {
-            Some(cs) => (
-                Some(cs.phase),
-                Some(cs.stress),
-                Some(cs.composure),
-                Some(cs.trust),
-                Some(cs.defense_budget),
-            ),
-            None => (None, None, None, None, None),
-        };
-
+impl ApiError {
+    fn validation(detail: impl Into<String>) -> Self {
         Self {
-            session_id: s.session_id,
-            case_id: s.case_id,
-            status: s.status,
-            current_turn: s.current_turn,
-            active_character: s.active_character,
-            phase,
-            stress,
-            composure,
-            trust,
-            defense_budget,
-            discovered_facts: s
-                .discovered_facts
-                .into_iter()
-                .map(|f| f.to_string())
-                .collect(),
-            discovered_evidence: s
-                .discovered_evidence
-                .into_iter()
-                .map(|e| e.to_string())
-                .collect(),
-            conversation: s.conversation,
-            accusations: s.accusations,
-            revision: s.revision,
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            title: "Validation failed",
+            detail: detail.into(),
+        }
+    }
+    fn not_found(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            title: "Resource not found",
+            detail: detail.into(),
+        }
+    }
+    fn conflict(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            title: "Revision conflict",
+            detail: detail.into(),
+        }
+    }
+    fn internal(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            title: "Internal server error",
+            detail: detail.into(),
+        }
+    }
+    fn from_storage(error: StorageError) -> Self {
+        match error {
+            StorageError::NotFound(detail) => Self::not_found(detail),
+            StorageError::RevisionConflict { expected, actual } => Self::conflict(format!(
+                "expected revision {expected}, actual revision {actual}"
+            )),
+            StorageError::Constraint(detail) => Self::validation(detail),
+            other => Self::internal(other.to_string()),
         }
     }
 }
 
-#[derive(Deserialize)]
-pub struct CreateSessionRequest {
-    pub case_id: CaseId,
-    pub character_id: Option<CharacterId>,
-}
-
-#[derive(Serialize)]
-pub struct CreateSessionResponse {
-    pub session_id: SessionId,
-    pub case_id: CaseId,
-}
-
-#[derive(Deserialize)]
-pub struct ActionRequest {
-    pub text: String,
-    pub evidence_ids: Vec<EvidenceId>,
-}
-
-#[derive(Serialize)]
-pub struct ActionResponse {
-    pub session_id: SessionId,
-    pub turn_id: TurnId,
-    pub turn_number: u32,
-    pub phase_before: Option<InterrogationPhase>,
-    pub phase_after: Option<InterrogationPhase>,
-    pub stress_delta: Option<i32>,
-    pub composure_delta: Option<i32>,
-    pub defense_delta: Option<i32>,
-    pub trust_delta: Option<i32>,
-    pub newly_revealed_disclosures: Vec<String>,
-    pub newly_contradicted_claims: Vec<String>,
-    pub utterance: String,
-    pub dialogue_act: String,
-}
-
-// ── Error handling ────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct ApiError {
-    pub error: String,
-    pub detail: Option<String>,
-}
-
 impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let status = if self.error == "not_found" {
-            StatusCode::NOT_FOUND
-        } else if self.error == "conflict" {
-            StatusCode::CONFLICT
-        } else if self.error == "validation" {
-            StatusCode::UNPROCESSABLE_ENTITY
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
+    fn into_response(self) -> Response {
+        let body = ProblemDetails {
+            kind: "about:blank",
+            title: self.title,
+            status: self.status.as_u16(),
+            detail: self.detail,
         };
-        (status, Json(self)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/problem+json"),
+        );
+        response
     }
 }
 
-fn internal_error(e: StorageError) -> ApiError {
-    ApiError {
-        error: "internal".into(),
-        detail: Some(e.to_string()),
-    }
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    version: &'static str,
 }
 
-fn parse_session_id(s: &str) -> Result<SessionId, ApiError> {
-    Uuid::parse_str(s).map(SessionId).map_err(|_| ApiError {
-        error: "not_found".into(),
-        detail: Some(format!("Invalid session ID: {s}")),
-    })
+#[derive(Serialize)]
+struct PublicConfig {
+    configured: bool,
+    base_url: String,
+    model: String,
+    api_key: &'static str,
 }
 
-fn not_found(msg: impl Into<String>) -> ApiError {
-    ApiError {
-        error: "not_found".into(),
-        detail: Some(msg.into()),
-    }
+#[derive(Deserialize)]
+struct TestProviderRequest {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
 }
 
-fn conflict(msg: impl Into<String>) -> ApiError {
-    ApiError {
-        error: "conflict".into(),
-        detail: Some(msg.into()),
-    }
+#[derive(Serialize)]
+struct CaseSummary {
+    id: CaseId,
+    title: String,
+    summary: String,
+    locale: String,
+    character_count: usize,
+    evidence_count: usize,
 }
 
-fn validation_error(msg: impl Into<String>) -> ApiError {
-    ApiError {
-        error: "validation".into(),
-        detail: Some(msg.into()),
-    }
+#[derive(Serialize)]
+struct PublicCharacter {
+    id: CharacterId,
+    name: String,
+    role: String,
+    public_profile: String,
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────
+#[derive(Debug, Clone, Serialize)]
+struct PublicEvidence {
+    id: EvidenceId,
+    title: String,
+    description: String,
+}
+
+#[derive(Serialize)]
+struct PublicCase {
+    id: CaseId,
+    title: String,
+    summary: String,
+    locale: String,
+    facts: Vec<Fact>,
+    evidence: Vec<PublicEvidence>,
+    characters: Vec<PublicCharacter>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicSession {
+    session_id: SessionId,
+    case_id: CaseId,
+    status: SessionStatus,
+    current_turn: u32,
+    active_character: Option<CharacterId>,
+    discovered_facts: Vec<Fact>,
+    discovered_evidence: Vec<PublicEvidence>,
+    conversation: Vec<DialogueEntry>,
+    accusations: Vec<Accusation>,
+    revision: u64,
+}
+
+#[derive(Deserialize)]
+struct CreateSessionRequest {
+    case_id: CaseId,
+    mode: SessionMode,
+    target_character_id: Option<CharacterId>,
+}
+
+#[derive(Serialize)]
+struct PublicEvent {
+    sequence: u64,
+    turn_id: Option<TurnId>,
+    event_type: NarrativeEventKind,
+    schema_version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActionRequest {
+    client_action_id: ClientActionId,
+    expected_revision: u64,
+    target_character_id: CharacterId,
+    text: String,
+    #[serde(default)]
+    attached_evidence_ids: Vec<EvidenceId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublicTurnResult {
+    session_id: SessionId,
+    turn_id: TurnId,
+    revision: u64,
+    utterance: String,
+    degraded: bool,
+}
+
+#[derive(Deserialize)]
+struct AccusationRequest {
+    expected_revision: u64,
+    target_character_id: CharacterId,
+    #[serde(default)]
+    evidence_ids: Vec<EvidenceId>,
+    reasoning: String,
+}
+
+#[derive(Serialize)]
+struct AccusationResponse {
+    result: AccusationResult,
+    session: PublicSession,
+}
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
-        status: "ok".into(),
-        version: "0.1.0".into(),
+        status: "ok",
+        version: "0.1.0",
     })
 }
 
-async fn list_cases(
-    State(state): State<Arc<RwLock<AppState>>>,
-) -> Result<Json<Vec<CaseSummary>>, ApiError> {
-    let app = state.read().await;
-    let cases = app.repo.list_cases().map_err(internal_error)?;
-    let summaries: Vec<CaseSummary> = cases
-        .into_iter()
-        .map(|c| CaseSummary {
-            id: c.id,
-            title: c.title,
-            summary: c.summary,
-            locale: c.locale,
-            character_count: c.characters.len(),
-            evidence_count: c.evidence.len(),
+async fn public_config(State(state): State<Arc<AppState>>) -> Result<Json<PublicConfig>, ApiError> {
+    let settings = state
+        .repo
+        .load_provider_settings()
+        .await
+        .map_err(ApiError::from_storage)?;
+    let configured = std::env::var("NARRASTATE_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .is_ok();
+    let settings = settings.unwrap_or(ProviderSettings {
+        base_url: std::env::var("NARRASTATE_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+        model: std::env::var("NARRASTATE_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
+    });
+    Ok(Json(PublicConfig {
+        configured,
+        base_url: settings.base_url,
+        model: settings.model,
+        api_key: if configured { "********" } else { "" },
+    }))
+}
+
+async fn test_provider(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<TestProviderRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if request.base_url.trim().is_empty() || request.model.trim().is_empty() {
+        return Err(ApiError::validation("base_url and model are required"));
+    }
+    let api_key = request
+        .api_key
+        .or_else(|| std::env::var("NARRASTATE_API_KEY").ok())
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .ok_or_else(|| ApiError::validation("api_key is required for connectivity test"))?;
+    let provider = OpenAiProvider::new(LlmConfig {
+        base_url: request.base_url.clone(),
+        model: request.model.clone(),
+        api_key,
+        timeout_secs: 10,
+        max_retries: 0,
+    })
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    provider
+        .chat(&[ChatMessage::user("Reply with OK")])
+        .await
+        .map_err(|error| ApiError::validation(format!("provider test failed: {error}")))?;
+    state
+        .repo
+        .save_provider_settings(&ProviderSettings {
+            base_url: request.base_url,
+            model: request.model,
         })
-        .collect();
-    Ok(Json(summaries))
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn list_cases(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<CaseSummary>>, ApiError> {
+    let cases = state
+        .repo
+        .list_cases()
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(
+        cases
+            .into_iter()
+            .map(|case| CaseSummary {
+                id: case.id,
+                title: case.title,
+                summary: case.summary,
+                locale: case.locale,
+                character_count: case.characters.len(),
+                evidence_count: case.evidence.len(),
+            })
+            .collect(),
+    ))
 }
 
 async fn get_case(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(state): State<Arc<AppState>>,
     Path(case_id): Path<String>,
-) -> Result<Json<CaseDefinition>, ApiError> {
-    let app = state.read().await;
-    let case_id = CaseId::from(case_id.as_str());
-    let case = app.repo.load_case(&case_id).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Case {} not found", case_id)),
-        _ => internal_error(e),
-    })?;
-    Ok(Json(case))
+) -> Result<Json<PublicCase>, ApiError> {
+    let case = state
+        .repo
+        .load_case(&CaseId::from(case_id))
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(public_case(&case)))
 }
 
-async fn validate_case(
-    Json(case): Json<CaseDefinition>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+async fn validate_case(Json(case): Json<CaseDefinition>) -> Json<serde_json::Value> {
     match case.validate() {
-        Ok(()) => Ok(Json(serde_json::json!({"valid": true}))),
-        Err(errors) => Ok(Json(serde_json::json!({
-            "valid": false,
-            "errors": errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-        }))),
+        Ok(()) => Json(serde_json::json!({"valid":true,"errors":[]})),
+        Err(errors) => Json(
+            serde_json::json!({"valid":false,"errors":errors.into_iter().map(|error| error.to_string()).collect::<Vec<_>>()}),
+        ),
     }
 }
 
 async fn create_session(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Json(req): Json<CreateSessionRequest>,
-) -> Result<Json<CreateSessionResponse>, ApiError> {
-    let app = state.read().await;
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CreateSessionRequest>,
+) -> Result<Json<PublicSession>, ApiError> {
+    let case = state
+        .repo
+        .load_case(&request.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let session = new_session(&case, request.mode, request.target_character_id)?;
+    let event = NarrativeEvent {
+        event_id: Uuid::new_v4(),
+        session_id: session.session_id,
+        turn_id: None,
+        sequence: 0,
+        event_type: NarrativeEventKind::SessionCreated,
+        schema_version: 1,
+        payload: NarrativeEventPayload::SessionCreated {
+            state: Box::new(session.clone()),
+        },
+    };
+    state
+        .repo
+        .create_session(&session, &[event])
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(public_session(&session, &case)))
+}
 
-    let case = app.repo.load_case(&req.case_id).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Case {} not found", req.case_id)),
-        _ => internal_error(e),
-    })?;
+async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<PublicSession>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    let session = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let case = state
+        .repo
+        .load_case(&session.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(public_session(&session, &case)))
+}
 
-    let character_id = req.character_id.unwrap_or_else(|| {
-        case.characters
-            .first()
-            .map(|c| c.id.clone())
-            .unwrap_or_else(|| CharacterId::from("unknown"))
+async fn get_session_events(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Vec<PublicEvent>>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    state
+        .repo
+        .load_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let events = state
+        .repo
+        .load_events(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(
+        events
+            .into_iter()
+            .map(|event| PublicEvent {
+                sequence: event.sequence,
+                turn_id: event.turn_id,
+                event_type: event.event_type,
+                schema_version: event.schema_version,
+            })
+            .collect(),
+    ))
+}
+
+async fn process_action(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(request): Json<ActionRequest>,
+) -> Result<Response, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    if request.text.chars().count() == 0 || request.text.chars().count() > 2000 {
+        return Err(ApiError::validation(
+            "text must contain 1..=2000 Unicode scalar values",
+        ));
+    }
+    let (sender, receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        send_sse(
+            &sender,
+            "turn.accepted",
+            &serde_json::json!({"client_action_id":request.client_action_id}),
+        )
+        .await;
+        send_sse(
+            &sender,
+            "turn.progress",
+            &serde_json::json!({"stage":"processing"}),
+        )
+        .await;
+        match execute_action(&state, session_id, request).await {
+            Ok(result) => {
+                send_sse(
+                    &sender,
+                    "dialogue.delta",
+                    &serde_json::json!({"text":result.utterance}),
+                )
+                .await;
+                send_sse(
+                    &sender,
+                    "state.public_changed",
+                    &serde_json::json!({"revision":result.revision}),
+                )
+                .await;
+                send_sse(&sender, "turn.completed", &result).await;
+            }
+            Err(error) => {
+                send_sse(
+                    &sender,
+                    "turn.failed",
+                    &ProblemDetails {
+                        kind: "about:blank",
+                        title: error.title,
+                        status: error.status.as_u16(),
+                        detail: error.detail,
+                    },
+                )
+                .await
+            }
+        }
     });
+    Ok(Sse::new(ReceiverStream::new(receiver))
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
 
-    let character_def = case
+async fn execute_action(
+    state: &AppState,
+    session_id: SessionId,
+    request: ActionRequest,
+) -> Result<PublicTurnResult, ApiError> {
+    if let Some(value) = state
+        .repo
+        .load_action_result(&session_id, &request.client_action_id)
+        .await
+        .map_err(ApiError::from_storage)?
+    {
+        return serde_json::from_value(value)
+            .map_err(|error| ApiError::internal(format!("stored action result: {error}")));
+    }
+    let mut session = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    if session.status != SessionStatus::Active {
+        return Err(ApiError::validation("session is not active"));
+    }
+    if session.revision != request.expected_revision {
+        return Err(ApiError::conflict(format!(
+            "expected revision {}, actual revision {}",
+            request.expected_revision, session.revision
+        )));
+    }
+    let case = state
+        .repo
+        .load_case(&session.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let character = case
         .characters
         .iter()
-        .find(|c| c.id == character_id)
-        .ok_or_else(|| not_found(format!("Character {character_id} not found in case")))?;
-
-    let session_id = SessionId::new();
-    let mut character_states = BTreeMap::new();
-    character_states.insert(
-        character_id.clone(),
-        CharacterRuntimeState::new(character_def.resilience),
+        .find(|character| character.id == request.target_character_id)
+        .ok_or_else(|| ApiError::validation("target_character_id is not part of this case"))?;
+    if let Some(id) = request
+        .attached_evidence_ids
+        .iter()
+        .find(|id| !session.discovered_evidence.contains(id))
+    {
+        return Err(ApiError::validation(format!(
+            "evidence {id} has not been discovered"
+        )));
+    }
+    let evidence_map: BTreeMap<_, _> = case
+        .evidence
+        .iter()
+        .cloned()
+        .map(|item| (item.id.clone(), item))
+        .collect();
+    let known_evidence: Vec<_> = case
+        .evidence
+        .iter()
+        .filter(|item| session.discovered_evidence.contains(&item.id))
+        .cloned()
+        .collect();
+    let available_claims = character
+        .claims
+        .iter()
+        .map(|claim| claim.id.clone())
+        .collect::<Vec<_>>();
+    let turn_id = TurnId::new();
+    let mut degraded = false;
+    let action = match session.mode {
+        SessionMode::Mock => state
+            .mock_interpreter
+            .interpret(&request.text, &request.attached_evidence_ids),
+        SessionMode::Llm => match state.llm_provider().await {
+            Ok((provider, settings)) => {
+                let started = Instant::now();
+                match LlmInterpreter::new(provider)
+                    .interpret_with_usage(
+                        &request.text,
+                        &request.attached_evidence_ids,
+                        character,
+                        &known_evidence,
+                        &available_claims,
+                    )
+                    .await
+                {
+                    Ok((action, usage)) => {
+                        record_llm_call(
+                            state,
+                            &session.session_id,
+                            turn_id,
+                            "interpreter",
+                            &settings,
+                            &request.text,
+                            started,
+                            usage,
+                            "success",
+                            None,
+                        )
+                        .await?;
+                        action
+                    }
+                    Err(error) => {
+                        record_llm_call(
+                            state,
+                            &session.session_id,
+                            turn_id,
+                            "interpreter",
+                            &settings,
+                            &request.text,
+                            started,
+                            TokenUsage::default(),
+                            "failed",
+                            Some(provider_error_code(&error)),
+                        )
+                        .await?;
+                        degraded = true;
+                        safe_fallback_action()
+                    }
+                }
+            }
+            Err(_) => {
+                degraded = true;
+                safe_fallback_action()
+            }
+        },
+    };
+    let character_state = session
+        .character_states
+        .get_mut(&character.id)
+        .ok_or_else(|| ApiError::internal("character runtime state missing"))?;
+    let transition = state.engine.process_with_requirements(
+        &action,
+        character_state,
+        character,
+        &evidence_map,
+        &case.required_case_elements,
+        turn_id,
     );
-
-    let session = SessionState {
+    let newly_revealed = transition.diff.newly_revealed_disclosures.first();
+    let plan = state.planner.plan_with_context(
+        &action,
+        character_state,
+        character,
+        &evidence_map,
+        &session.discovered_facts,
+        newly_revealed,
+    );
+    let recent = session
+        .conversation
+        .iter()
+        .map(|entry| (format!("{:?}", entry.speaker), entry.text.clone()))
+        .chain(std::iter::once(("Player".into(), request.text.clone())))
+        .collect::<Vec<_>>();
+    let utterance = match session.mode {
+        SessionMode::Mock => state.mock_renderer.render(&plan).utterance,
+        SessionMode::Llm => match state.llm_provider().await {
+            Ok((provider, settings)) => {
+                let started = Instant::now();
+                let (output, status, usage) = LlmRenderer::new(provider)
+                    .render_validated_with_usage(&plan, character, &recent)
+                    .await;
+                record_llm_call(
+                    state,
+                    &session.session_id,
+                    turn_id,
+                    "renderer",
+                    &settings,
+                    &format!("{:?}:{:?}", plan.act, plan.allowed_facts),
+                    started,
+                    usage,
+                    if status == RendererStatus::TemplateFallback {
+                        "degraded"
+                    } else {
+                        "success"
+                    },
+                    (status == RendererStatus::TemplateFallback)
+                        .then_some("validation_or_provider_failure"),
+                )
+                .await?;
+                degraded |= status != RendererStatus::Model;
+                output.utterance
+            }
+            Err(_) => {
+                degraded = true;
+                narrastate_provider::validator::OutputValidator::new()
+                    .template_fallback(&plan)
+                    .utterance
+            }
+        },
+    };
+    for disclosure in &transition.diff.newly_revealed_disclosures {
+        if let Some(node) = character
+            .disclosure_graph
+            .nodes
+            .iter()
+            .find(|node| &node.id == disclosure)
+        {
+            session
+                .discovered_facts
+                .extend(node.reveals.iter().cloned());
+        }
+    }
+    session.active_character = Some(character.id.clone());
+    session.current_turn = session.current_turn.saturating_add(1);
+    session.conversation.push(DialogueEntry {
+        turn_id,
+        speaker: DialogueSpeaker::Player,
+        text: request.text.clone(),
+        attached_evidence: request.attached_evidence_ids.clone(),
+    });
+    session.conversation.push(DialogueEntry {
+        turn_id,
+        speaker: DialogueSpeaker::Character(character.id.clone()),
+        text: utterance.clone(),
+        attached_evidence: Vec::new(),
+    });
+    if transition.diff.newly_revealed_disclosures.iter().any(|id| {
+        character
+            .disclosure_graph
+            .confession_node()
+            .is_some_and(|node| node.id == *id)
+    }) {
+        character_state
+            .set_phase(narrastate_core::InterrogationPhase::Resolved, turn_id)
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        session.status = SessionStatus::Resolved;
+    }
+    session.revision = session.revision.saturating_add(1);
+    let result = PublicTurnResult {
         session_id,
-        case_id: req.case_id.clone(),
+        turn_id,
+        revision: session.revision,
+        utterance,
+        degraded,
+    };
+    let response =
+        serde_json::to_value(&result).map_err(|error| ApiError::internal(error.to_string()))?;
+    let events = turn_events(
+        &session,
+        &request,
+        &action,
+        &transition,
+        &plan,
+        turn_id,
+        state
+            .repo
+            .load_events(&session_id)
+            .await
+            .map_err(ApiError::from_storage)?
+            .len() as u64,
+    );
+    match state
+        .repo
+        .commit_turn(
+            request.expected_revision,
+            &request.client_action_id,
+            &session,
+            &events,
+            &response,
+        )
+        .await
+        .map_err(ApiError::from_storage)?
+    {
+        CommitOutcome::Committed => Ok(result),
+        CommitOutcome::Idempotent(value) => serde_json::from_value(value)
+            .map_err(|error| ApiError::internal(format!("stored action result: {error}"))),
+    }
+}
+
+async fn make_accusation(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(request): Json<AccusationRequest>,
+) -> Result<Json<AccusationResponse>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    let mut session = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    if session.status != SessionStatus::Active {
+        return Err(ApiError::validation("session is not active"));
+    }
+    if session.revision != request.expected_revision {
+        return Err(ApiError::conflict(format!(
+            "expected revision {}, actual revision {}",
+            request.expected_revision, session.revision
+        )));
+    }
+    if request.reasoning.chars().count() > 4000 {
+        return Err(ApiError::validation(
+            "reasoning must be at most 4000 characters",
+        ));
+    }
+    let case = state
+        .repo
+        .load_case(&session.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let target = case
+        .characters
+        .iter()
+        .find(|character| character.id == request.target_character_id)
+        .ok_or_else(|| ApiError::validation("target_character_id is not part of this case"))?;
+    if let Some(id) = request
+        .evidence_ids
+        .iter()
+        .find(|id| !session.discovered_evidence.contains(id))
+    {
+        return Err(ApiError::validation(format!(
+            "evidence {id} has not been discovered"
+        )));
+    }
+    let evidence_map: BTreeMap<_, _> = case
+        .evidence
+        .iter()
+        .cloned()
+        .map(|item| (item.id.clone(), item))
+        .collect();
+    let selected: BTreeSet<_> = request.evidence_ids.iter().cloned().collect();
+    let coverage = covered_elements(&selected, &evidence_map);
+    let confessed = target
+        .disclosure_graph
+        .confession_node()
+        .is_some_and(|node| {
+            session
+                .character_states
+                .get(&target.id)
+                .is_some_and(|runtime| runtime.revealed_disclosures.contains(&node.id))
+        });
+    let result = if target.disclosure_graph.confession_node().is_none() {
+        AccusationResult::WrongSuspect
+    } else if !case.required_case_elements.is_subset(&coverage) {
+        AccusationResult::CorrectButInsufficient
+    } else if confessed {
+        AccusationResult::CaseProvenWithConfession
+    } else {
+        AccusationResult::CaseProvenWithoutConfession
+    };
+    let turn_id = TurnId::new();
+    session.accusations.push(Accusation {
+        turn_id,
+        target: target.id.clone(),
+        evidence_ids: request.evidence_ids,
+        reasoning: request.reasoning,
+        result: result.clone(),
+    });
+    if matches!(
+        result,
+        AccusationResult::CaseProvenWithConfession | AccusationResult::CaseProvenWithoutConfession
+    ) {
+        session.status = SessionStatus::Resolved;
+        if let Some(runtime) = session.character_states.get_mut(&target.id) {
+            runtime
+                .set_phase(narrastate_core::InterrogationPhase::Resolved, turn_id)
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+        }
+    }
+    session.revision = session.revision.saturating_add(1);
+    let sequence = state
+        .repo
+        .load_events(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?
+        .len() as u64;
+    let mut events = vec![NarrativeEvent {
+        event_id: Uuid::new_v4(),
+        session_id,
+        turn_id: Some(turn_id),
+        sequence,
+        event_type: NarrativeEventKind::AccusationSubmitted,
+        schema_version: 1,
+        payload: NarrativeEventPayload::AccusationSubmitted {
+            state: Box::new(session.clone()),
+        },
+    }];
+    if session.status == SessionStatus::Resolved {
+        events.push(NarrativeEvent {
+            event_id: Uuid::new_v4(),
+            session_id,
+            turn_id: Some(turn_id),
+            sequence: sequence + 1,
+            event_type: NarrativeEventKind::CaseResolved,
+            schema_version: 1,
+            payload: NarrativeEventPayload::CaseResolved {
+                state: Box::new(session.clone()),
+            },
+        });
+    }
+    state
+        .repo
+        .commit_session(request.expected_revision, &session, &events)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(AccusationResponse {
+        result,
+        session: public_session(&session, &case),
+    }))
+}
+
+async fn restart_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<PublicSession>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    let old = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let case = state
+        .repo
+        .load_case(&old.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let session = new_session(&case, old.mode, old.active_character)?;
+    let event = NarrativeEvent {
+        event_id: Uuid::new_v4(),
+        session_id: session.session_id,
+        turn_id: None,
+        sequence: 0,
+        event_type: NarrativeEventKind::SessionCreated,
+        schema_version: 1,
+        payload: NarrativeEventPayload::SessionCreated {
+            state: Box::new(session.clone()),
+        },
+    };
+    state
+        .repo
+        .create_session(&session, &[event])
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(public_session(&session, &case)))
+}
+
+fn new_session(
+    case: &CaseDefinition,
+    mode: SessionMode,
+    target: Option<CharacterId>,
+) -> Result<SessionState, ApiError> {
+    let active = target
+        .or_else(|| {
+            case.characters
+                .first()
+                .map(|character| character.id.clone())
+        })
+        .ok_or_else(|| ApiError::validation("case has no characters"))?;
+    if !case
+        .characters
+        .iter()
+        .any(|character| character.id == active)
+    {
+        return Err(ApiError::validation(
+            "target_character_id is not part of this case",
+        ));
+    }
+    let discovered_evidence = case
+        .initial_player_knowledge
+        .evidence_ids
+        .iter()
+        .cloned()
+        .chain(
+            case.evidence
+                .iter()
+                .filter(|item| {
+                    item.discoverable_by
+                        .iter()
+                        .any(|rule| matches!(rule, DiscoveryRule::StartingEvidence))
+                })
+                .map(|item| item.id.clone()),
+        )
+        .collect();
+    Ok(SessionState {
+        session_id: SessionId::new(),
+        case_id: case.id.clone(),
+        mode,
         status: SessionStatus::Active,
         current_turn: 0,
-        active_character: Some(character_id.clone()),
+        active_character: Some(active),
         discovered_facts: case
             .initial_player_knowledge
             .fact_ids
             .iter()
             .cloned()
             .collect(),
-        discovered_evidence: case
-            .initial_player_knowledge
-            .evidence_ids
+        discovered_evidence,
+        character_states: case
+            .characters
             .iter()
-            .cloned()
+            .map(|character| {
+                (
+                    character.id.clone(),
+                    CharacterRuntimeState::new(character.resilience),
+                )
+            })
             .collect(),
-        character_states,
         conversation: Vec::new(),
         accusations: Vec::new(),
         revision: 0,
-    };
-
-    let sid = session_id;
-    app.repo.create_session(&session).map_err(|e| match e {
-        StorageError::Constraint(_) => conflict(e.to_string()),
-        _ => internal_error(e),
-    })?;
-
-    let event = NarrativeEvent {
-        event_id: Uuid::new_v4(),
-        session_id: sid,
-        turn_id: None,
-        sequence: 0,
-        event_type: NarrativeEventKind::SessionCreated,
-        schema_version: 1,
-        payload: serde_json::json!({
-            "case_id": req.case_id.to_string(),
-            "active_character": character_id.to_string(),
-        }),
-    };
-    if let Err(e) = app.repo.append_events(&session_id, &[event]) {
-        tracing::warn!("Failed to record session_created event: {e}");
-    }
-
-    Ok(Json(CreateSessionResponse {
-        session_id,
-        case_id: req.case_id,
-    }))
+    })
 }
 
-async fn get_session(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Path(session_id): Path<String>,
-) -> Result<Json<SessionResponse>, ApiError> {
-    let app = state.read().await;
-    let sid = parse_session_id(&session_id)?;
-    let session = app.repo.load_session(&sid).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Session {session_id} not found")),
-        _ => internal_error(e),
-    })?;
-    Ok(Json(SessionResponse::from(session)))
-}
-
-async fn get_session_events(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Path(session_id): Path<String>,
-) -> Result<Json<Vec<NarrativeEvent>>, ApiError> {
-    let app = state.read().await;
-    let sid = parse_session_id(&session_id)?;
-    let events = app.repo.load_events(&sid).map_err(internal_error)?;
-    Ok(Json(events))
-}
-
-async fn process_action(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Path(session_id): Path<String>,
-    Json(req): Json<ActionRequest>,
-) -> Result<Json<ActionResponse>, ApiError> {
-    let app = state.write().await;
-    let sid = parse_session_id(&session_id)?;
-
-    let session = app.repo.load_session(&sid).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Session {session_id} not found")),
-        _ => internal_error(e),
-    })?;
-
-    if session.status != SessionStatus::Active {
-        return Err(validation_error("Session is not active"));
-    }
-
-    let case = app.repo.load_case(&session.case_id).map_err(|e| match e {
-        StorageError::NotFound(_) => {
-            internal_error(StorageError::NotFound("Case not found for session".into()))
-        }
-        _ => internal_error(e),
-    })?;
-
-    let evidence_map: BTreeMap<EvidenceId, EvidenceDefinition> = case
+fn public_case(case: &CaseDefinition) -> PublicCase {
+    let evidence = case
         .evidence
         .iter()
-        .map(|e| (e.id.clone(), e.clone()))
-        .collect();
-
-    let facts: BTreeSet<_> = case.facts.iter().map(|f| f.id.clone()).collect();
-
-    let character_id = session
-        .active_character
-        .as_ref()
-        .ok_or_else(|| validation_error("No active character"))?
-        .clone();
-
-    let character_def = case
-        .characters
-        .iter()
-        .find(|c| c.id == character_id)
-        .ok_or_else(|| {
-            internal_error(StorageError::NotFound("Character not found in case".into()))
-        })?;
-
-    let action = app.interpreter.interpret(&req.text, &req.evidence_ids);
-    let engine_turn_id = TurnId::new();
-
-    let mut state_clone = session
-        .character_states
-        .get(&character_id)
-        .cloned()
-        .ok_or_else(|| {
-            internal_error(StorageError::NotFound("Character state not found".into()))
-        })?;
-
-    let result = app.engine.process(
-        &action,
-        &mut state_clone,
-        character_def,
-        &evidence_map,
-        &facts,
-        engine_turn_id,
-    );
-
-    let plan = app
-        .planner
-        .plan(&action, &state_clone, character_def, &evidence_map);
-    let utterance = app.renderer.render(&plan);
-
-    let phase_before = result.diff.phase_before;
-    let phase_after = result.diff.phase_after;
-
-    let entry_turn_id = TurnId::new();
-    let mut updated_session = session;
-    updated_session.current_turn += 1;
-    updated_session
-        .character_states
-        .insert(character_id.clone(), state_clone);
-    updated_session.conversation.push(DialogueEntry {
-        turn_id: entry_turn_id,
-        speaker: DialogueSpeaker::Player,
-        text: req.text.clone(),
-        attached_evidence: req.evidence_ids.clone(),
-    });
-    updated_session.conversation.push(DialogueEntry {
-        turn_id: entry_turn_id,
-        speaker: DialogueSpeaker::Character(character_id),
-        text: utterance.utterance.clone(),
-        attached_evidence: vec![],
-    });
-
-    let mut updated = updated_session.clone();
-    updated.revision += 1;
-    let events = vec![NarrativeEvent {
-        event_id: Uuid::new_v4(),
-        session_id: sid,
-        turn_id: Some(entry_turn_id),
-        sequence: updated_session.current_turn as u64,
-        event_type: NarrativeEventKind::TurnProcessed,
-        schema_version: 1,
-        payload: serde_json::json!({
-            "phase_before": format!("{:?}", phase_before),
-            "phase_after": format!("{:?}", phase_after),
-        }),
-    }];
-
-    app.repo.update_session(&updated).map_err(|e| match e {
-        StorageError::RevisionConflict { .. } => {
-            conflict("Session was modified by another request. Retry.")
-        }
-        _ => internal_error(e),
-    })?;
-
-    if let Err(e) = app.repo.append_events(&sid, &events) {
-        tracing::warn!("Failed to record turn_processed event: {e}");
-    }
-
-    let stress_delta = result.diff.stress_after as i32 - result.diff.stress_before as i32;
-    let composure_delta = result.diff.composure_after as i32 - result.diff.composure_before as i32;
-    let defense_delta =
-        result.diff.defense_budget_after as i32 - result.diff.defense_budget_before as i32;
-    let trust_delta = result.diff.trust_after as i32 - result.diff.trust_before as i32;
-
-    Ok(Json(ActionResponse {
-        session_id: sid,
-        turn_id: entry_turn_id,
-        turn_number: updated_session.current_turn,
-        phase_before: Some(phase_before),
-        phase_after: Some(phase_after),
-        stress_delta: Some(stress_delta),
-        composure_delta: Some(composure_delta),
-        defense_delta: Some(defense_delta),
-        trust_delta: Some(trust_delta),
-        newly_revealed_disclosures: result
-            .diff
-            .newly_revealed_disclosures
-            .iter()
-            .map(|d| d.to_string())
-            .collect(),
-        newly_contradicted_claims: result
-            .contradictory_claims
-            .iter()
-            .map(|c| c.to_string())
-            .collect(),
-        utterance: utterance.utterance,
-        dialogue_act: format!("{:?}", plan.act),
-    }))
-}
-
-async fn make_accusation(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Path(session_id): Path<String>,
-    Json(req): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let app = state.write().await;
-    let sid = parse_session_id(&session_id)?;
-
-    let target_str = req
-        .get("target")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| validation_error("Missing target"))?;
-    let target = CharacterId::from(target_str);
-
-    let evidence_ids: Vec<EvidenceId> = req
-        .get("evidence_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(EvidenceId::from))
-                .collect()
+        .filter(|item| {
+            item.discoverable_by
+                .iter()
+                .any(|rule| matches!(rule, DiscoveryRule::StartingEvidence))
         })
-        .unwrap_or_default();
-
-    let reasoning = req
-        .get("reasoning")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let mut session = app.repo.load_session(&sid).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Session {session_id} not found")),
-        _ => internal_error(e),
-    })?;
-
-    let turn_id = TurnId::new();
-    let turn_id_str = turn_id.to_string();
-    let accusation = narrastate_core::session::Accusation {
-        turn_id,
-        target: target.clone(),
-        evidence_ids: evidence_ids.clone(),
-        reasoning,
-        result: AccusationResult::WrongSuspect,
-    };
-
-    session.accusations.push(accusation);
-    session.revision += 1;
-    app.repo.update_session(&session).map_err(|e| match e {
-        StorageError::RevisionConflict { .. } => conflict("Session was modified"),
-        _ => internal_error(e),
-    })?;
-
-    let event = NarrativeEvent {
-        event_id: Uuid::new_v4(),
-        session_id: sid,
-        turn_id: Some(TurnId::new()),
-        sequence: session.revision,
-        event_type: NarrativeEventKind::AccusationMade,
-        schema_version: 1,
-        payload: serde_json::json!({"target": target_str}),
-    };
-    if let Err(e) = app.repo.append_events(&sid, &[event]) {
-        tracing::warn!("Failed to record accusation event: {e}");
+        .map(public_evidence)
+        .collect();
+    PublicCase {
+        id: case.id.clone(),
+        title: case.title.clone(),
+        summary: case.summary.clone(),
+        locale: case.locale.clone(),
+        facts: case
+            .facts
+            .iter()
+            .filter(|fact| fact.visibility == FactVisibility::PublicAtStart)
+            .cloned()
+            .collect(),
+        evidence,
+        characters: case
+            .characters
+            .iter()
+            .map(|character| PublicCharacter {
+                id: character.id.clone(),
+                name: character.name.clone(),
+                role: character.role.clone(),
+                public_profile: character.public_profile.clone(),
+            })
+            .collect(),
     }
-
-    Ok(Json(
-        serde_json::json!({"status": "accusation_recorded", "turn_id": turn_id_str}),
-    ))
 }
 
-async fn restart_session(
-    State(state): State<Arc<RwLock<AppState>>>,
-    Path(session_id): Path<String>,
-) -> Result<Json<SessionResponse>, ApiError> {
-    let app = state.read().await;
-    let sid = parse_session_id(&session_id)?;
-
-    let session = app.repo.load_session(&sid).map_err(|e| match e {
-        StorageError::NotFound(_) => not_found(format!("Session {session_id} not found")),
-        _ => internal_error(e),
-    })?;
-
-    let case_def = app.repo.load_case(&session.case_id).map_err(|e| match e {
-        StorageError::NotFound(_) => {
-            internal_error(StorageError::NotFound("Case not found".into()))
-        }
-        _ => internal_error(e),
-    })?;
-
-    let character_id = session.active_character.unwrap_or_else(|| {
-        case_def
-            .characters
-            .first()
-            .map(|c| c.id.clone())
-            .unwrap_or_else(|| CharacterId::from("unknown"))
-    });
-
-    let resilience = case_def
-        .characters
-        .iter()
-        .find(|c| c.id == character_id)
-        .map(|c| c.resilience)
-        .unwrap_or(5);
-
-    let mut character_states = BTreeMap::new();
-    character_states.insert(character_id.clone(), CharacterRuntimeState::new(resilience));
-
-    let new_session = SessionState {
+fn public_session(session: &SessionState, case: &CaseDefinition) -> PublicSession {
+    PublicSession {
         session_id: session.session_id,
-        case_id: session.case_id,
-        status: SessionStatus::Active,
-        current_turn: 0,
-        active_character: Some(character_id),
-        discovered_facts: case_def
-            .initial_player_knowledge
-            .fact_ids
+        case_id: session.case_id.clone(),
+        status: session.status,
+        current_turn: session.current_turn,
+        active_character: session.active_character.clone(),
+        discovered_facts: case
+            .facts
             .iter()
+            .filter(|fact| session.discovered_facts.contains(&fact.id))
             .cloned()
             .collect(),
-        discovered_evidence: case_def
-            .initial_player_knowledge
-            .evidence_ids
+        discovered_evidence: case
+            .evidence
             .iter()
-            .cloned()
+            .filter(|item| session.discovered_evidence.contains(&item.id))
+            .map(public_evidence)
             .collect(),
-        character_states,
-        conversation: Vec::new(),
-        accusations: Vec::new(),
-        revision: 0,
-    };
+        conversation: session.conversation.clone(),
+        accusations: session.accusations.clone(),
+        revision: session.revision,
+    }
+}
 
-    if let Err(e) = app.repo.update_session(&new_session) {
-        tracing::warn!("Failed to persist restarted session: {e}");
+fn public_evidence(item: &EvidenceDefinition) -> PublicEvidence {
+    PublicEvidence {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        description: item.description.clone(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_llm_call(
+    state: &AppState,
+    session_id: &SessionId,
+    turn_id: TurnId,
+    purpose: &str,
+    settings: &ProviderSettings,
+    prompt_material: &str,
+    started: Instant,
+    usage: TokenUsage,
+    status: &str,
+    error_code: Option<&str>,
+) -> Result<(), ApiError> {
+    let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    state
+        .repo
+        .record_llm_call(&LlmCallMetadata {
+            call_id: Uuid::new_v4().to_string(),
+            session_id: *session_id,
+            turn_id: Some(turn_id.to_string()),
+            purpose: purpose.into(),
+            provider: "openai-compatible".into(),
+            model: settings.model.clone(),
+            prompt_hash: format!("{:x}", Sha256::digest(prompt_material.as_bytes())),
+            latency_ms,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            status: status.into(),
+            error_code: error_code.map(str::to_owned),
+        })
+        .await
+        .map_err(ApiError::from_storage)
+}
+
+fn provider_error_code(error: &ProviderError) -> &'static str {
+    match error {
+        ProviderError::Unauthorized => "unauthorized",
+        ProviderError::RateLimited => "rate_limited",
+        ProviderError::Timeout => "timeout",
+        ProviderError::Network(_) => "network",
+        ProviderError::InvalidResponse(_) => "invalid_response",
+        ProviderError::ContextTooLong => "context_too_long",
+        ProviderError::SafetyRejected => "safety_rejected",
+        ProviderError::Unknown(_) => "unknown",
+    }
+}
+
+fn safe_fallback_action() -> InterpretedAction {
+    InterpretedAction {
+        intent: PlayerIntent::Ask,
+        topics: vec!["unknown".into()],
+        referenced_entities: Vec::new(),
+        referenced_claims: Vec::new(),
+        evidence_usage: Vec::new(),
+        asserted_propositions: Vec::new(),
+        tone: PlayerTone::Neutral,
+        confidence: 0.0,
+    }
+}
+
+fn parse_session_id(value: &str) -> Result<SessionId, ApiError> {
+    Uuid::parse_str(value)
+        .map(SessionId)
+        .map_err(|_| ApiError::not_found("invalid session ID"))
+}
+
+async fn send_sse(
+    sender: &mpsc::Sender<Result<Event, Infallible>>,
+    name: &'static str,
+    value: &impl Serialize,
+) {
+    if let Ok(data) = serde_json::to_string(value) {
+        let _ = sender
+            .send(Ok(Event::default().event(name).data(data)))
+            .await;
+    }
+}
+
+fn turn_events(
+    session: &SessionState,
+    request: &ActionRequest,
+    action: &InterpretedAction,
+    transition: &narrastate_runtime::TransitionResult,
+    plan: &narrastate_runtime::DialoguePlan,
+    turn_id: TurnId,
+    start: u64,
+) -> Vec<NarrativeEvent> {
+    let mut events = Vec::new();
+    let mut push = |kind, payload| {
+        let sequence = start + events.len() as u64;
+        events.push(NarrativeEvent {
+            event_id: Uuid::new_v4(),
+            session_id: session.session_id,
+            turn_id: Some(turn_id),
+            sequence,
+            event_type: kind,
+            schema_version: 1,
+            payload,
+        });
+    };
+    push(
+        NarrativeEventKind::PlayerActionAccepted,
+        NarrativeEventPayload::PlayerActionAccepted {
+            client_action_id: request.client_action_id,
+            target: request.target_character_id.clone(),
+            attached_evidence: request.attached_evidence_ids.clone(),
+        },
+    );
+    push(
+        NarrativeEventKind::ActionInterpreted,
+        NarrativeEventPayload::ActionInterpreted {
+            action: action.clone(),
+        },
+    );
+    if !request.attached_evidence_ids.is_empty() {
+        push(
+            NarrativeEventKind::EvidencePresented,
+            NarrativeEventPayload::EvidencePresented {
+                evidence_ids: request.attached_evidence_ids.clone(),
+            },
+        );
+    }
+    if !transition.contradictory_claims.is_empty() {
+        push(
+            NarrativeEventKind::ClaimContradicted,
+            NarrativeEventPayload::ClaimContradicted {
+                claim_ids: transition.contradictory_claims.clone(),
+            },
+        );
+    }
+    push(
+        NarrativeEventKind::CharacterStateChanged,
+        NarrativeEventPayload::CharacterStateChanged {
+            character_id: request.target_character_id.clone(),
+            reason: transition.transition_reason,
+        },
+    );
+    if !transition.diff.newly_revealed_disclosures.is_empty() {
+        push(
+            NarrativeEventKind::DisclosureUnlocked,
+            NarrativeEventPayload::DisclosureUnlocked {
+                disclosure_ids: transition.diff.newly_revealed_disclosures.clone(),
+            },
+        );
+    }
+    push(
+        NarrativeEventKind::DialoguePlanned,
+        NarrativeEventPayload::DialoguePlanned { act: plan.act },
+    );
+    push(
+        NarrativeEventKind::DialogueRendered,
+        NarrativeEventPayload::DialogueRendered,
+    );
+    push(
+        NarrativeEventKind::TurnCommitted,
+        NarrativeEventPayload::TurnCommitted {
+            client_action_id: request.client_action_id,
+            state: Box::new(session.clone()),
+        },
+    );
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use narrastate_storage::SqliteRepository;
+
+    async fn fixture() -> (Arc<AppState>, SessionState, CaseDefinition) {
+        let case: CaseDefinition =
+            serde_json::from_str(include_str!("../../../cases/rain-gallery/case.json")).unwrap();
+        let repository = Arc::new(SqliteRepository::new_in_memory().await.unwrap());
+        repository.save_case(&case).await.unwrap();
+        let session = new_session(&case, SessionMode::Mock, None).unwrap();
+        repository
+            .create_session(
+                &session,
+                &[NarrativeEvent {
+                    event_id: Uuid::new_v4(),
+                    session_id: session.session_id,
+                    turn_id: None,
+                    sequence: 0,
+                    event_type: NarrativeEventKind::SessionCreated,
+                    schema_version: 1,
+                    payload: NarrativeEventPayload::SessionCreated {
+                        state: Box::new(session.clone()),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        (Arc::new(AppState::new(repository)), session, case)
     }
 
-    Ok(Json(SessionResponse::from(new_session)))
+    fn action(
+        revision: u64,
+        client_action_id: ClientActionId,
+        evidence: &[&str],
+        text: &str,
+    ) -> ActionRequest {
+        ActionRequest {
+            client_action_id,
+            expected_revision: revision,
+            target_character_id: CharacterId::from("luo-cheng"),
+            text: text.into(),
+            attached_evidence_ids: evidence.iter().map(|id| EvidenceId::from(*id)).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn public_dtos_redact_world_truth_and_runtime_values() {
+        let (_, session, case) = fixture().await;
+        let case_json = serde_json::to_string(&public_case(&case)).unwrap();
+        assert!(!case_json.contains("fact_painting_hidden"));
+        assert!(!case_json.contains("disclosure_graph"));
+        assert!(!case_json.contains("resilience"));
+
+        let session_json = serde_json::to_string(&public_session(&session, &case)).unwrap();
+        for forbidden in [
+            "stress",
+            "composure",
+            "defense_budget",
+            "revealed_disclosures",
+        ] {
+            assert!(!session_json.contains(forbidden));
+        }
+    }
+
+    #[tokio::test]
+    async fn action_retry_returns_stored_result_without_second_turn() {
+        let (state, session, _) = fixture().await;
+        let id = ClientActionId::new();
+        let request = action(0, id, &["ev_card_log"], "门禁记录怎么解释？");
+        let first = execute_action(&state, session.session_id, request.clone())
+            .await
+            .unwrap();
+        let retry = execute_action(&state, session.session_id, request)
+            .await
+            .unwrap();
+        assert_eq!(first.turn_id, retry.turn_id);
+        assert_eq!(first.revision, 1);
+        let stored = state.repo.load_session(&session.session_id).await.unwrap();
+        assert_eq!(stored.current_turn, 1);
+        assert_eq!(stored.revision, 1);
+    }
+
+    #[tokio::test]
+    async fn sse_action_emits_contract_order() {
+        let (state, session, _) = fixture().await;
+        let response = process_action(
+            State(state),
+            Path(session.session_id.to_string()),
+            Json(action(
+                0,
+                ClientActionId::new(),
+                &["ev_card_log"],
+                "门禁记录怎么解释？",
+            )),
+        )
+        .await
+        .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let names = [
+            "event: turn.accepted",
+            "event: turn.progress",
+            "event: dialogue.delta",
+            "event: state.public_changed",
+            "event: turn.completed",
+        ];
+        let mut previous = 0;
+        for name in names {
+            let position = body
+                .find(name)
+                .unwrap_or_else(|| panic!("missing {name}: {body}"));
+            assert!(position >= previous);
+            previous = position;
+        }
+    }
+
+    #[tokio::test]
+    async fn demo_follows_d1_to_d6_without_skipping() {
+        let (state, session, _) = fixture().await;
+        let evidence = [
+            "ev_card_log",
+            "ev_sensor_cmd",
+            "ev_mud_track",
+            "ev_fiber",
+            "ev_pawn_contact",
+        ];
+        for (index, evidence_id) in evidence.iter().enumerate() {
+            execute_action(
+                &state,
+                session.session_id,
+                action(
+                    index as u64,
+                    ClientActionId::new(),
+                    &[*evidence_id],
+                    "请解释这份证据",
+                ),
+            )
+            .await
+            .unwrap();
+            let current = state.repo.load_session(&session.session_id).await.unwrap();
+            let runtime = current
+                .character_states
+                .get(&CharacterId::from("luo-cheng"))
+                .unwrap();
+            assert_eq!(runtime.revealed_disclosures.len(), index + 1);
+            assert!(!runtime
+                .revealed_disclosures
+                .contains(&narrastate_core::DisclosureId::from("d6_confession")));
+        }
+        execute_action(
+            &state,
+            session.session_id,
+            action(5, ClientActionId::new(), &[], "是你做的，说明全部事实"),
+        )
+        .await
+        .unwrap();
+        let current = state.repo.load_session(&session.session_id).await.unwrap();
+        assert_eq!(current.status, SessionStatus::Resolved);
+        let runtime = current
+            .character_states
+            .get(&CharacterId::from("luo-cheng"))
+            .unwrap();
+        assert!(runtime
+            .revealed_disclosures
+            .contains(&narrastate_core::DisclosureId::from("d6_confession")));
+    }
+
+    #[tokio::test]
+    async fn accusation_distinguishes_insufficient_and_proven_without_confession() {
+        let (state, session, _) = fixture().await;
+        let insufficient = make_accusation(
+            State(state.clone()),
+            Path(session.session_id.to_string()),
+            Json(AccusationRequest {
+                expected_revision: 0,
+                target_character_id: CharacterId::from("luo-cheng"),
+                evidence_ids: vec![EvidenceId::from("ev_card_log")],
+                reasoning: "只有机会证据".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            insufficient.0.result,
+            AccusationResult::CorrectButInsufficient
+        );
+        assert_eq!(insufficient.0.session.status, SessionStatus::Active);
+
+        let proven = make_accusation(
+            State(state),
+            Path(session.session_id.to_string()),
+            Json(AccusationRequest {
+                expected_revision: 1,
+                target_character_id: CharacterId::from("luo-cheng"),
+                evidence_ids: vec![
+                    EvidenceId::from("ev_card_log"),
+                    EvidenceId::from("ev_fiber"),
+                    EvidenceId::from("ev_pawn_contact"),
+                ],
+                reasoning: "身份、机会、行为和意图均已闭合".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            proven.0.result,
+            AccusationResult::CaseProvenWithoutConfession
+        );
+        assert_eq!(proven.0.session.status, SessionStatus::Resolved);
+    }
 }

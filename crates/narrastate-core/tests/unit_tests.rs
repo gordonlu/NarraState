@@ -2,7 +2,9 @@ use narrastate_core::disclosure::{
     ConfessionValidationError, CycleError, DisclosureGraph, DisclosureKind, DisclosureNode,
     DisclosurePrerequisite,
 };
-use narrastate_core::evidence::{CaseElement, EvidenceDefinition, EvidenceUsageKind};
+use narrastate_core::evidence::{
+    CaseElement, DiscoveryRule, EvidenceDefinition, EvidenceUsageKind,
+};
 use narrastate_core::fact::{Fact, FactValue, FactVisibility, Proposition, TruthValue};
 use narrastate_core::id::{
     CaseId, CharacterId, ClaimId, DefenseStrategyId, DisclosureId, EvidenceId, FactId, SessionId,
@@ -16,7 +18,8 @@ use narrastate_core::transition::{
 use narrastate_core::{
     AccusationResult, Belief, BeliefSource, CaseDefinition, CharacterDefinition, CharacterGoal,
     CharacterRuntimeState, ClaimDefinition, ClaimKind, DialogueAct, DialogueSpeaker, Ending,
-    Entity, PersonalityProfile, PlayerKnowledge, SessionState, SessionStatus, SpokenClaim,
+    Entity, PersonalityProfile, PlayerKnowledge, SessionMode, SessionState, SessionStatus,
+    SpokenClaim,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -500,7 +503,7 @@ fn valid_case() -> CaseDefinition {
             reliability: 0.9,
             directness: 0.8,
             exclusivity: 0.5,
-            discoverable_by: vec![],
+            discoverable_by: vec![DiscoveryRule::StartingEvidence],
         }],
         characters: vec![CharacterDefinition {
             id: char_id.clone(),
@@ -783,6 +786,7 @@ fn test_session_state_new_defaults() {
     let state = SessionState {
         session_id: sid,
         case_id: CaseId::from("test"),
+        mode: SessionMode::Mock,
         status: SessionStatus::Active,
         current_turn: 0,
         active_character: None,
@@ -804,13 +808,13 @@ fn test_disclosure_prerequisite_variants() {
         disclosure: DisclosureId::from("d1"),
     };
     let _e = DisclosurePrerequisite::EvidencePresented {
-        facts: vec![FactId::from("f1")],
+        evidence: vec![EvidenceId::from("e1")],
     };
     let _p = DisclosurePrerequisite::PhaseAtLeast {
         min_phase: InterrogationPhase::Defensive,
     };
     let _c = DisclosurePrerequisite::ClaimInvalidated {
-        disclosure: DisclosureId::from("some_disclosure"),
+        claim: ClaimId::from("some_claim"),
     };
 }
 

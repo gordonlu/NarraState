@@ -1,5 +1,3 @@
-mod api;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
@@ -16,10 +14,8 @@ use narrastate_core::phase::InterrogationPhase;
 use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone, TransitionTuning};
 use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
 use narrastate_runtime::{DialoguePlanner, TransitionEngine};
+use narrastate_server::api::{router, AppState};
 use narrastate_storage::SqliteRepository;
-use tokio::sync::RwLock;
-
-use crate::api::{router, AppState};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,8 +45,12 @@ fn main() {
 // ── Serve subcommand ──────────────────────────────────────────────────────
 
 async fn cmd_serve(args: &[String]) {
-    let mut port = 8080u16;
-    let mut db_path = "narrastate.db".to_string();
+    let host = std::env::var("NARRASTATE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let mut port = std::env::var("NARRASTATE_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3000u16);
+    let mut db_path = std::env::var("DATABASE_URL").unwrap_or_else(|_| "narrastate.db".into());
     let mut cases_dir = "cases".to_string();
 
     let mut i = 0;
@@ -84,7 +84,7 @@ async fn cmd_serve(args: &[String]) {
         .init();
 
     // Open repository
-    let repo = match SqliteRepository::new(&db_path) {
+    let repo = match SqliteRepository::new(&db_path).await {
         Ok(r) => {
             tracing::info!("Connected to database: {db_path}");
             r
@@ -96,37 +96,33 @@ async fn cmd_serve(args: &[String]) {
     };
 
     // Load cases from directory
-    if let Ok(entries) = fs::read_dir(&cases_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                match fs::read_to_string(&path) {
-                    Ok(json) => match serde_json::from_str::<CaseDefinition>(&json) {
-                        Ok(case) => {
-                            if let Err(e) = repo.save_case(&case) {
-                                tracing::warn!("Failed to save case {}: {e}", case.id);
-                            } else {
-                                tracing::info!("Loaded case: {} ({})", case.title, case.id);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse {}: {e}", path.display());
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!("Failed to read {}: {e}", path.display());
-                    }
-                }
-            }
+    let paths = match collect_json_files(std::path::Path::new(&cases_dir)) {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("Failed to scan cases directory '{cases_dir}': {error}");
+            process::exit(1);
         }
-    } else {
-        tracing::warn!("Cases directory '{cases_dir}' not found");
+    };
+    for path in paths {
+        let json = fs::read_to_string(&path).unwrap_or_else(|error| {
+            eprintln!("Failed to read {}: {error}", path.display());
+            process::exit(1);
+        });
+        let case: CaseDefinition = serde_json::from_str(&json).unwrap_or_else(|error| {
+            eprintln!("Failed to parse {}: {error}", path.display());
+            process::exit(1);
+        });
+        if let Err(error) = repo.save_case(&case).await {
+            eprintln!("Failed to validate/save case {}: {error}", path.display());
+            process::exit(1);
+        }
+        tracing::info!("Loaded case: {} ({})", case.title, case.id);
     }
 
-    let state = Arc::new(RwLock::new(AppState::new(Box::new(repo))));
+    let state = Arc::new(AppState::new(Arc::new(repo)));
     let app = router(state);
 
-    let addr = format!("0.0.0.0:{port}");
+    let addr = format!("{host}:{port}");
     tracing::info!("NarraState server starting on {addr}");
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -140,6 +136,22 @@ async fn cmd_serve(args: &[String]) {
         eprintln!("Server error: {e}");
         process::exit(1);
     });
+}
+
+fn collect_json_files(root: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            files.extend(collect_json_files(&path)?);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            files.push(path);
+        }
+    }
+    Ok(files)
 }
 
 fn cmd_validate(args: &[String]) {
@@ -200,7 +212,6 @@ fn check_reachability(case: &CaseDefinition) -> bool {
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
 
-    let facts: BTreeSet<_> = case.facts.iter().map(|f| f.id.clone()).collect();
     let culprit_claim_ids: Vec<_> = culprit.claims.iter().map(|c| c.id.clone()).collect();
 
     let relevant_evidence: Vec<&EvidenceDefinition> = case
@@ -242,7 +253,14 @@ fn check_reachability(case: &CaseDefinition) -> bool {
             confidence: 1.0,
         };
         let turn_id = TurnId::new();
-        let _result = engine.process(&action, &mut state, culprit, &evidence_map, &facts, turn_id);
+        let _result = engine.process_with_requirements(
+            &action,
+            &mut state,
+            culprit,
+            &evidence_map,
+            &case.required_case_elements,
+            turn_id,
+        );
     }
 
     println!(
@@ -291,12 +309,19 @@ fn cmd_play(args: &[String]) {
         process::exit(1);
     }
 
-    let json = fs::read_to_string(&case_path).unwrap_or_else(|e| {
-        eprintln!("Error reading {}: {}", case_path, e);
+    let resolved_case_path = if std::path::Path::new(&case_path).is_file() {
+        std::path::PathBuf::from(&case_path)
+    } else {
+        std::path::Path::new("cases")
+            .join(&case_path)
+            .join("case.json")
+    };
+    let json = fs::read_to_string(&resolved_case_path).unwrap_or_else(|e| {
+        eprintln!("Error reading {}: {}", resolved_case_path.display(), e);
         process::exit(1);
     });
     let case: CaseDefinition = serde_json::from_str(&json).unwrap_or_else(|e| {
-        eprintln!("Error parsing {}: {}", case_path, e);
+        eprintln!("Error parsing {}: {}", resolved_case_path.display(), e);
         process::exit(1);
     });
 
@@ -306,7 +331,12 @@ fn cmd_play(args: &[String]) {
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
 
-    let facts: BTreeSet<_> = case.facts.iter().map(|f| f.id.clone()).collect();
+    let player_known_facts: BTreeSet<_> = case
+        .initial_player_knowledge
+        .fact_ids
+        .iter()
+        .cloned()
+        .collect();
     let engine = TransitionEngine::new(TransitionTuning::default());
     let planner = DialoguePlanner;
     let interpreter = MockInterpreter;
@@ -415,20 +445,34 @@ fn cmd_play(args: &[String]) {
 
         // Parse evidence attachments: text [ev_id1] [ev_id2]
         let (text, attached_ids) = parse_evidence_attachments(line);
+        if let Some(unknown) = attached_ids
+            .iter()
+            .find(|id| !evidence_map.contains_key(*id))
+        {
+            eprintln!("Unknown evidence ID: {unknown}");
+            continue;
+        }
 
         let action = interpreter.interpret(&text, &attached_ids);
         let turn_id = TurnId::new();
 
-        let result = engine.process(
+        let result = engine.process_with_requirements(
             &action,
             &mut state,
             character,
             &evidence_map,
-            &facts,
+            &case.required_case_elements,
             turn_id,
         );
 
-        let plan = planner.plan(&action, &state, character, &evidence_map);
+        let plan = planner.plan_with_context(
+            &action,
+            &mut state,
+            character,
+            &evidence_map,
+            &player_known_facts,
+            result.diff.newly_revealed_disclosures.first(),
+        );
         let utterance = renderer.render(&plan);
 
         turn_count += 1;

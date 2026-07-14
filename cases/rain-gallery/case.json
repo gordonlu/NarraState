@@ -353,7 +353,10 @@
             "id": "d1_presence",
             "kind": "Presence",
             "reveals": ["fact_luo_left_cr"],
-            "prerequisites": [],
+            "prerequisites": [
+              { "evidence": ["ev_card_log"] },
+              { "claim": "claim_never_left" }
+            ],
             "min_phase": "Guarded",
             "response_intent": "PartialAdmission"
           },
@@ -364,7 +367,8 @@
             "prerequisites": [
               {
                 "disclosure": "d1_presence"
-              }
+              },
+              { "evidence": ["ev_card_log"] }
             ],
             "min_phase": "Defensive",
             "response_intent": "PartialAdmission"
@@ -376,7 +380,9 @@
             "prerequisites": [
               {
                 "disclosure": "d2_access"
-              }
+              },
+              { "evidence": ["ev_sensor_cmd"] },
+              { "claim": "claim_innocent" }
             ],
             "min_phase": "Pressured",
             "response_intent": "PartialAdmission"
@@ -388,7 +394,8 @@
             "prerequisites": [
               {
                 "disclosure": "d3_means"
-              }
+              },
+              { "evidence": ["ev_mud_track", "ev_fiber"] }
             ],
             "min_phase": "Cornered",
             "response_intent": "PartialAdmission"
@@ -400,7 +407,8 @@
             "prerequisites": [
               {
                 "disclosure": "d4_action"
-              }
+              },
+              { "evidence": ["ev_pawn_contact"] }
             ],
             "min_phase": "ConfessionEligible",
             "response_intent": "PartialAdmission"

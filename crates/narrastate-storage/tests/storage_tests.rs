@@ -1,255 +1,264 @@
-use narrastate_core::case::CaseDefinition;
-use narrastate_core::character::CharacterRuntimeState;
-use narrastate_core::id::{CaseId, CharacterId, FactId, SessionId, TurnId};
-use narrastate_core::session::{
-    Accusation, AccusationResult, DialogueEntry, DialogueSpeaker, NarrativeEvent,
-    NarrativeEventKind, SessionState, SessionStatus,
+use narrastate_core::{
+    ClientActionId, NarrativeEvent, NarrativeEventKind, NarrativeEventPayload, SessionId,
+    SessionMode, SessionState, SessionStatus,
 };
-use narrastate_runtime::ports::{Repository, StorageError};
+use narrastate_runtime::ports::{
+    CommitOutcome, LlmCallMetadata, ProviderSettings, Repository, StorageError,
+};
 use narrastate_storage::SqliteRepository;
+use uuid::Uuid;
 
-fn make_session() -> SessionState {
+fn load_case() -> narrastate_core::CaseDefinition {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cases/rain-gallery/case.json");
+    let json = std::fs::read_to_string(path).expect("rain-gallery fixture");
+    serde_json::from_str(&json).expect("valid case JSON")
+}
+
+fn session(case: &narrastate_core::CaseDefinition) -> SessionState {
     SessionState {
         session_id: SessionId::new(),
-        case_id: CaseId::from("test-case"),
+        case_id: case.id.clone(),
+        mode: SessionMode::Mock,
         status: SessionStatus::Active,
         current_turn: 0,
-        active_character: Some(CharacterId::from("suspect")),
-        discovered_facts: [FactId::from("fact_a")].into(),
-        discovered_evidence: Default::default(),
-        character_states: Default::default(),
-        conversation: vec![DialogueEntry {
-            turn_id: TurnId::new(),
-            speaker: DialogueSpeaker::Player,
-            text: "Hello".into(),
-            attached_evidence: vec![],
-        }],
-        accusations: vec![Accusation {
-            turn_id: TurnId::new(),
-            target: CharacterId::from("suspect"),
-            evidence_ids: vec![],
-            reasoning: "test".into(),
-            result: AccusationResult::WrongSuspect,
-        }],
+        active_character: case
+            .characters
+            .first()
+            .map(|character| character.id.clone()),
+        discovered_facts: case
+            .initial_player_knowledge
+            .fact_ids
+            .iter()
+            .cloned()
+            .collect(),
+        discovered_evidence: case
+            .evidence
+            .iter()
+            .map(|evidence| evidence.id.clone())
+            .collect(),
+        character_states: case
+            .characters
+            .iter()
+            .map(|character| {
+                (
+                    character.id.clone(),
+                    narrastate_core::CharacterRuntimeState::new(character.resilience),
+                )
+            })
+            .collect(),
+        conversation: Vec::new(),
+        accusations: Vec::new(),
         revision: 0,
     }
 }
 
-#[test]
-fn test_session_roundtrip() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let session = make_session();
+fn created_event(state: &SessionState) -> NarrativeEvent {
+    NarrativeEvent {
+        event_id: Uuid::new_v4(),
+        session_id: state.session_id,
+        turn_id: None,
+        sequence: 0,
+        event_type: NarrativeEventKind::SessionCreated,
+        schema_version: 1,
+        payload: NarrativeEventPayload::SessionCreated {
+            state: Box::new(state.clone()),
+        },
+    }
+}
 
-    repo.create_session(&session).unwrap();
+fn committed_event(state: &SessionState, action: ClientActionId, sequence: u64) -> NarrativeEvent {
+    NarrativeEvent {
+        event_id: Uuid::new_v4(),
+        session_id: state.session_id,
+        turn_id: None,
+        sequence,
+        event_type: NarrativeEventKind::TurnCommitted,
+        schema_version: 1,
+        payload: NarrativeEventPayload::TurnCommitted {
+            client_action_id: action,
+            state: Box::new(state.clone()),
+        },
+    }
+}
 
-    let loaded = repo.load_session(&session.session_id).unwrap();
-    assert_eq!(loaded.session_id, session.session_id);
-    assert_eq!(loaded.case_id, session.case_id);
-    assert_eq!(loaded.status, session.status);
-    assert_eq!(loaded.current_turn, session.current_turn);
-    assert_eq!(loaded.conversation.len(), session.conversation.len());
-    assert_eq!(loaded.accusations.len(), session.accusations.len());
+async fn repository_with_session() -> (SqliteRepository, SessionState) {
+    let repo = SqliteRepository::new_in_memory().await.expect("repository");
+    let case = load_case();
+    repo.save_case(&case).await.expect("save case");
+    let state = session(&case);
+    repo.create_session(&state, &[created_event(&state)])
+        .await
+        .expect("create session atomically");
+    (repo, state)
+}
+
+#[tokio::test]
+async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
+    let (repo, state) = repository_with_session().await;
+    let loaded = repo.load_session(&state.session_id).await.expect("session");
     assert_eq!(loaded.revision, 0);
-}
+    assert_eq!(repo.list_cases().await.expect("cases").len(), 1);
 
-#[test]
-fn test_session_not_found() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let err = repo.load_session(&SessionId::new()).unwrap_err();
-    assert!(matches!(err, StorageError::NotFound(_)));
-}
-
-#[test]
-fn test_session_duplicate_fails() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let session = make_session();
-    repo.create_session(&session).unwrap();
-    let err = repo.create_session(&session).unwrap_err();
-    assert!(matches!(err, StorageError::Constraint(_)));
-}
-
-#[test]
-fn test_session_update_and_revision_conflict() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let mut session = make_session();
-    repo.create_session(&session).unwrap();
-
-    session.revision = 1;
-    session.current_turn = 5;
-    repo.update_session(&session).unwrap();
-
-    let loaded = repo.load_session(&session.session_id).unwrap();
-    assert_eq!(loaded.current_turn, 5);
-
-    session.revision = 1;
-    session.current_turn = 10;
-    let err = repo.update_session(&session).unwrap_err();
-    assert!(matches!(err, StorageError::RevisionConflict { .. }));
-}
-
-#[test]
-fn test_case_roundtrip() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let json = r#"{
-        "schema_version": "0.1.0",
-        "id": "rain-gallery",
-        "title": "Rain Gallery",
-        "summary": "A test case",
-        "locale": "zh-CN",
-        "required_case_elements": ["Identity","Opportunity","Means"],
-        "entities": [],
-        "facts": [
-            {
-                "id": "fact_a",
-                "subject": "gallery",
-                "predicate": "is_raining",
-                "object": "true",
-                "truth": "True",
-                "visibility": "PublicAtStart",
-                "tags": []
-            }
-        ],
-        "evidence": [],
-        "characters": [
-            {
-                "id": "suspect",
-                "name": "Suspect",
-                "role": "Suspect",
-                "public_profile": "",
-                "personality": {"traits": ["nervous"], "speech_style": null},
-                "goals": [],
-                "knowledge": [],
-                "initial_beliefs": [],
-                "claims": [],
-                "defenses": [],
-                "disclosure_graph": {
-                    "nodes": [],
-                    "edges": []
-                },
-                "resilience": 5
-            }
-        ],
-        "initial_player_knowledge": {"fact_ids": [], "evidence_ids": []},
-        "ending": null
-    }"#;
-    let case: CaseDefinition = serde_json::from_str(json).unwrap();
-
-    repo.save_case(&case).unwrap();
-    let loaded = repo.load_case(&CaseId::from("rain-gallery")).unwrap();
-    assert_eq!(loaded.id, case.id);
-    assert_eq!(loaded.title, "Rain Gallery");
-    assert_eq!(loaded.facts.len(), 1);
-
-    let list = repo.list_cases().unwrap();
-    assert_eq!(list.len(), 1);
-}
-
-#[test]
-fn test_case_not_found() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let err = repo.load_case(&CaseId::from("nonexistent")).unwrap_err();
-    assert!(matches!(err, StorageError::NotFound(_)));
-}
-
-#[test]
-fn test_event_append_and_load() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let session = make_session();
-    repo.create_session(&session).unwrap();
-
-    let events = vec![
-        NarrativeEvent {
-            event_id: uuid::Uuid::new_v4(),
-            session_id: session.session_id,
-            turn_id: None,
-            sequence: 0,
-            event_type: NarrativeEventKind::SessionCreated,
-            schema_version: 1,
-            payload: serde_json::json!({}),
-        },
-        NarrativeEvent {
-            event_id: uuid::Uuid::new_v4(),
-            session_id: session.session_id,
-            turn_id: Some(TurnId::new()),
-            sequence: 1,
-            event_type: NarrativeEventKind::TurnProcessed,
-            schema_version: 1,
-            payload: serde_json::json!({"turn": 1}),
-        },
-    ];
-
-    repo.append_events(&session.session_id, &events).unwrap();
-
-    let loaded = repo.load_events(&session.session_id).unwrap();
-    assert_eq!(loaded.len(), 2);
-    assert_eq!(loaded[0].sequence, 0);
-    assert_eq!(loaded[0].event_type, NarrativeEventKind::SessionCreated);
-    assert_eq!(loaded[1].sequence, 1);
-    assert_eq!(loaded[1].event_type, NarrativeEventKind::TurnProcessed);
-}
-
-#[test]
-fn test_snapshot_roundtrip() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let session = make_session();
-    repo.create_session(&session).unwrap();
-
-    let snapshot = repo.load_latest_snapshot(&session.session_id).unwrap();
-    assert!(snapshot.is_none());
-
-    let mut updated = session.clone();
-    updated.current_turn = 10;
-    updated.revision = 1;
-    repo.save_snapshot(&session.session_id, 1, &updated)
-        .unwrap();
-
-    let (rev, state) = repo
-        .load_latest_snapshot(&session.session_id)
-        .unwrap()
-        .expect("should have snapshot");
-    assert_eq!(rev, 1);
-    assert_eq!(state.current_turn, 10);
-
-    let mut newer = session.clone();
-    newer.current_turn = 20;
-    newer.revision = 2;
-    repo.save_snapshot(&session.session_id, 2, &newer).unwrap();
-
-    let (rev2, _) = repo
-        .load_latest_snapshot(&session.session_id)
-        .unwrap()
-        .expect("should have later snapshot");
-    assert_eq!(rev2, 2);
-}
-
-#[test]
-fn test_session_concurrent_creation_fails() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let session = make_session();
-    repo.create_session(&session).unwrap();
-
-    let session2 = SessionState {
-        session_id: session.session_id,
-        ..make_session()
+    let settings = ProviderSettings {
+        base_url: "https://example.invalid/v1".into(),
+        model: "test-model".into(),
     };
-    let err = repo.create_session(&session2).unwrap_err();
-    assert!(matches!(err, StorageError::Constraint(_)));
+    repo.save_provider_settings(&settings)
+        .await
+        .expect("settings");
+    let loaded_settings = repo
+        .load_provider_settings()
+        .await
+        .expect("load settings")
+        .expect("settings exist");
+    assert_eq!(loaded_settings.model, "test-model");
+
+    repo.record_llm_call(&LlmCallMetadata {
+        call_id: Uuid::new_v4().to_string(),
+        session_id: state.session_id,
+        turn_id: None,
+        purpose: "interpreter".into(),
+        provider: "openai-compatible".into(),
+        model: "test-model".into(),
+        prompt_hash: "redacted-hash".into(),
+        latency_ms: 12,
+        input_tokens: Some(10),
+        output_tokens: Some(4),
+        status: "ok".into(),
+        error_code: None,
+    })
+    .await
+    .expect("record metadata");
 }
 
-#[test]
-fn test_character_runtime_state_in_session() {
-    let repo = SqliteRepository::new_in_memory().unwrap();
-    let mut session = make_session();
-    let char_id = CharacterId::from("suspect");
-    let char_state = CharacterRuntimeState::new(5);
-    session.character_states.insert(char_id.clone(), char_state);
+#[tokio::test]
+async fn g9_client_action_retry_is_idempotent() {
+    let (repo, mut state) = repository_with_session().await;
+    let action = ClientActionId::new();
+    state.current_turn = 1;
+    state.revision = 1;
+    let response = serde_json::json!({"revision": 1, "utterance": "ok"});
+    let event = committed_event(&state, action, 1);
 
-    repo.create_session(&session).unwrap();
+    let first = repo
+        .commit_turn(0, &action, &state, &[event], &response)
+        .await
+        .expect("first commit");
+    assert!(matches!(first, CommitOutcome::Committed));
 
-    let loaded = repo.load_session(&session.session_id).unwrap();
-    let loaded_char = loaded.character_states.get(&char_id).unwrap();
-    assert_eq!(loaded_char.stress, 0);
-    assert_eq!(loaded_char.composure, 100);
-    assert_eq!(loaded_char.defense_budget, 100);
-    assert_eq!(loaded_char.trust, 0);
+    let retry = repo
+        .commit_turn(0, &action, &state, &[], &response)
+        .await
+        .expect("idempotent retry");
+    match retry {
+        CommitOutcome::Idempotent(stored) => assert_eq!(stored, response),
+        CommitOutcome::Committed => panic!("retry must not commit again"),
+    }
+    assert_eq!(
+        repo.load_session(&state.session_id).await.unwrap().revision,
+        1
+    );
+    assert_eq!(repo.load_events(&state.session_id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn stale_distinct_action_returns_revision_conflict() {
+    let (repo, mut state) = repository_with_session().await;
+    let first = ClientActionId::new();
+    state.revision = 1;
+    repo.commit_turn(
+        0,
+        &first,
+        &state,
+        &[committed_event(&state, first, 1)],
+        &serde_json::json!({"revision":1}),
+    )
+    .await
+    .unwrap();
+    let error = repo
+        .commit_turn(
+            0,
+            &ClientActionId::new(),
+            &state,
+            &[],
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("stale revision must fail");
+    assert!(matches!(
+        error,
+        StorageError::RevisionConflict { actual: 1, .. }
+    ));
+}
+
+#[tokio::test]
+async fn event_failure_rolls_back_session_update() {
+    let (repo, mut state) = repository_with_session().await;
+    state.revision = 1;
+    let duplicate_sequence = committed_event(&state, ClientActionId::new(), 0);
+    let error = repo
+        .commit_session(0, &state, &[duplicate_sequence])
+        .await
+        .expect_err("duplicate event sequence must abort transaction");
+    assert!(matches!(error, StorageError::Constraint(_)));
+    assert_eq!(
+        repo.load_session(&state.session_id).await.unwrap().revision,
+        0
+    );
+}
+
+#[tokio::test]
+async fn g10_replay_matches_latest_committed_state() {
+    let (repo, mut state) = repository_with_session().await;
+    for revision in 1..=3 {
+        let action = ClientActionId::new();
+        state.current_turn = revision as u32;
+        state.revision = revision;
+        repo.commit_turn(
+            revision - 1,
+            &action,
+            &state,
+            &[committed_event(&state, action, revision)],
+            &serde_json::json!({"revision":revision}),
+        )
+        .await
+        .unwrap();
+    }
+    let recovered = repo
+        .recover_session(&state.session_id)
+        .await
+        .expect("replay");
+    assert_eq!(recovered.revision, state.revision);
+    assert_eq!(recovered.current_turn, state.current_turn);
+    assert_eq!(
+        serde_json::to_value(recovered).unwrap(),
+        serde_json::to_value(state).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn successful_tenth_revision_creates_snapshot() {
+    let (repo, mut state) = repository_with_session().await;
+    for revision in 1..=10 {
+        let action = ClientActionId::new();
+        state.current_turn = revision as u32;
+        state.revision = revision;
+        repo.commit_turn(
+            revision - 1,
+            &action,
+            &state,
+            &[committed_event(&state, action, revision)],
+            &serde_json::json!({"revision":revision}),
+        )
+        .await
+        .unwrap();
+    }
+    let (revision, snapshot) = repo
+        .load_latest_snapshot(&state.session_id)
+        .await
+        .unwrap()
+        .expect("automatic snapshot");
+    assert_eq!(revision, 10);
+    assert_eq!(snapshot.revision, 10);
 }

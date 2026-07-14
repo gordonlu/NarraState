@@ -1,4 +1,4 @@
-use crate::id::{DisclosureId, FactId};
+use crate::id::{ClaimId, DisclosureId, EvidenceId, FactId};
 use crate::phase::InterrogationPhase;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,9 +37,9 @@ pub enum DisclosureKind {
 #[serde(untagged)]
 pub enum DisclosurePrerequisite {
     Disclosure { disclosure: DisclosureId },
-    EvidencePresented { facts: Vec<FactId> },
+    EvidencePresented { evidence: Vec<EvidenceId> },
     PhaseAtLeast { min_phase: InterrogationPhase },
-    ClaimInvalidated { disclosure: DisclosureId },
+    ClaimInvalidated { claim: ClaimId },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -63,14 +63,6 @@ impl DisclosureGraph {
         for node in &self.nodes {
             for prereq in &node.prerequisites {
                 if let DisclosurePrerequisite::Disclosure { disclosure: dep_id } = prereq {
-                    if !node_ids.contains(dep_id) {
-                        errors.push(CycleError::MissingPrerequisiteNode {
-                            node: node.id.clone(),
-                            missing: dep_id.clone(),
-                        });
-                    }
-                }
-                if let DisclosurePrerequisite::ClaimInvalidated { disclosure: dep_id } = prereq {
                     if !node_ids.contains(dep_id) {
                         errors.push(CycleError::MissingPrerequisiteNode {
                             node: node.id.clone(),
@@ -120,12 +112,8 @@ impl DisclosureGraph {
 
         if let Some(node) = self.nodes.iter().find(|n| n.id == *current) {
             for prereq in &node.prerequisites {
-                match prereq {
-                    DisclosurePrerequisite::Disclosure { disclosure: dep_id }
-                    | DisclosurePrerequisite::ClaimInvalidated { disclosure: dep_id } => {
-                        self.dfs_check(dep_id, visited, stack)?;
-                    }
-                    _ => {}
+                if let DisclosurePrerequisite::Disclosure { disclosure: dep_id } = prereq {
+                    self.dfs_check(dep_id, visited, stack)?;
                 }
             }
         }
@@ -182,6 +170,23 @@ impl DisclosureGraph {
         revealed: &BTreeSet<DisclosureId>,
         phase: InterrogationPhase,
     ) -> bool {
+        self.is_unlockable_with_context(
+            node_id,
+            revealed,
+            phase,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+    }
+
+    pub fn is_unlockable_with_context(
+        &self,
+        node_id: &DisclosureId,
+        revealed: &BTreeSet<DisclosureId>,
+        phase: InterrogationPhase,
+        presented_evidence: &BTreeSet<EvidenceId>,
+        invalidated_claims: &BTreeSet<ClaimId>,
+    ) -> bool {
         let Some(node) = self.nodes.iter().find(|n| n.id == *node_id) else {
             return false;
         };
@@ -199,9 +204,14 @@ impl DisclosureGraph {
                 DisclosurePrerequisite::Disclosure { disclosure: dep_id } => {
                     revealed.contains(dep_id)
                 }
-                DisclosurePrerequisite::EvidencePresented { .. } => false, // checked at runtime
+                DisclosurePrerequisite::EvidencePresented { evidence } => {
+                    !evidence.is_empty()
+                        && evidence.iter().all(|id| presented_evidence.contains(id))
+                }
                 DisclosurePrerequisite::PhaseAtLeast { min_phase } => phase >= *min_phase,
-                DisclosurePrerequisite::ClaimInvalidated { .. } => false, // checked at runtime
+                DisclosurePrerequisite::ClaimInvalidated { claim } => {
+                    invalidated_claims.contains(claim)
+                }
             };
             if !met {
                 return false;

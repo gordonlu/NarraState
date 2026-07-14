@@ -6,7 +6,7 @@ use crate::phase::InterrogationPhase;
 use crate::strategy::DefenseStrategy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterDefinition {
@@ -60,6 +60,8 @@ pub struct CharacterRuntimeState {
     pub trust: i8,
     pub defense_budget: u8,
     pub active_strategy: Option<DefenseStrategyId>,
+    #[serde(default)]
+    pub defense_uses: BTreeMap<DefenseStrategyId, u8>,
     pub revealed_disclosures: BTreeSet<DisclosureId>,
     pub exhausted_defenses: BTreeSet<DefenseStrategyId>,
     pub spoken_claims: Vec<SpokenClaim>,
@@ -76,6 +78,7 @@ impl CharacterRuntimeState {
             trust: 0,
             defense_budget: 100,
             active_strategy: None,
+            defense_uses: BTreeMap::new(),
             revealed_disclosures: BTreeSet::new(),
             exhausted_defenses: BTreeSet::new(),
             spoken_claims: Vec::new(),
@@ -118,6 +121,15 @@ impl CharacterRuntimeState {
 
     pub fn exhaust_defense(&mut self, strategy_id: DefenseStrategyId) {
         self.exhausted_defenses.insert(strategy_id);
+    }
+
+    pub fn use_defense(&mut self, strategy_id: &DefenseStrategyId, max_uses: u8) {
+        let uses = self.defense_uses.entry(strategy_id.clone()).or_default();
+        *uses = uses.saturating_add(1);
+        self.active_strategy = Some(strategy_id.clone());
+        if *uses >= max_uses {
+            self.exhausted_defenses.insert(strategy_id.clone());
+        }
     }
 
     pub fn reveal_disclosure(&mut self, disclosure_id: DisclosureId) {

@@ -31,6 +31,10 @@ pub enum ValidationError {
     RequiredElementNotCovered {
         element: String,
     },
+    Semantic {
+        field: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -60,6 +64,9 @@ impl std::fmt::Display for ValidationError {
                     f,
                     "Required case element \"{element}\" is not covered by any evidence"
                 )
+            }
+            ValidationError::Semantic { field, detail } => {
+                write!(f, "{field}: {detail}")
             }
         }
     }

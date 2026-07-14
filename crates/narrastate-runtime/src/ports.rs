@@ -1,5 +1,6 @@
+use async_trait::async_trait;
 use narrastate_core::case::CaseDefinition;
-use narrastate_core::id::{CaseId, SessionId};
+use narrastate_core::id::{CaseId, ClientActionId, SessionId};
 use narrastate_core::session::{NarrativeEvent, SessionState};
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +40,7 @@ impl Default for LlmConfig {
             model: "gpt-4o-mini".into(),
             api_key: String::new(),
             timeout_secs: 30,
-            max_retries: 2,
+            max_retries: 1,
         }
     }
 }
@@ -48,6 +49,35 @@ impl Default for LlmConfig {
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    pub fn combine(self, other: Self) -> Self {
+        Self {
+            input_tokens: combine_optional(self.input_tokens, other.input_tokens),
+            output_tokens: combine_optional(self.output_tokens, other.output_tokens),
+        }
+    }
+}
+
+fn combine_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderResponse<T> {
+    pub output: T,
+    pub usage: TokenUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,13 +109,17 @@ impl ChatMessage {
     }
 }
 
+#[async_trait]
 pub trait LlmProvider: Send + Sync {
-    fn chat(&self, messages: &[ChatMessage]) -> Result<String, ProviderError>;
-    fn chat_structured(
+    async fn chat(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<ProviderResponse<String>, ProviderError>;
+    async fn chat_structured(
         &self,
         messages: &[ChatMessage],
         response_schema: &serde_json::Value,
-    ) -> Result<serde_json::Value, ProviderError>;
+    ) -> Result<ProviderResponse<serde_json::Value>, ProviderError>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -106,30 +140,87 @@ pub enum StorageError {
     Internal(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    pub base_url: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmCallMetadata {
+    pub call_id: String,
+    pub session_id: SessionId,
+    pub turn_id: Option<String>,
+    pub purpose: String,
+    pub provider: String,
+    pub model: String,
+    pub prompt_hash: String,
+    pub latency_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub status: String,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CommitOutcome {
+    Committed,
+    Idempotent(serde_json::Value),
+}
+
+#[async_trait]
 pub trait Repository: Send + Sync {
-    fn create_session(&self, session: &SessionState) -> Result<(), StorageError>;
-    fn load_session(&self, session_id: &SessionId) -> Result<SessionState, StorageError>;
-    fn update_session(&self, session: &SessionState) -> Result<(), StorageError>;
+    async fn create_session(
+        &self,
+        session: &SessionState,
+        events: &[NarrativeEvent],
+    ) -> Result<(), StorageError>;
+    async fn load_session(&self, session_id: &SessionId) -> Result<SessionState, StorageError>;
+    async fn recover_session(&self, session_id: &SessionId) -> Result<SessionState, StorageError>;
+    async fn commit_turn(
+        &self,
+        expected_revision: u64,
+        client_action_id: &ClientActionId,
+        session: &SessionState,
+        events: &[NarrativeEvent],
+        response: &serde_json::Value,
+    ) -> Result<CommitOutcome, StorageError>;
+    async fn commit_session(
+        &self,
+        expected_revision: u64,
+        session: &SessionState,
+        events: &[NarrativeEvent],
+    ) -> Result<(), StorageError>;
+    async fn load_action_result(
+        &self,
+        session_id: &SessionId,
+        client_action_id: &ClientActionId,
+    ) -> Result<Option<serde_json::Value>, StorageError>;
 
-    fn save_case(&self, case: &CaseDefinition) -> Result<(), StorageError>;
-    fn load_case(&self, case_id: &CaseId) -> Result<CaseDefinition, StorageError>;
-    fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError>;
-
-    fn append_events(
+    async fn save_case(&self, case: &CaseDefinition) -> Result<(), StorageError>;
+    async fn load_case(&self, case_id: &CaseId) -> Result<CaseDefinition, StorageError>;
+    async fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError>;
+    async fn append_events(
         &self,
         session_id: &SessionId,
         events: &[NarrativeEvent],
     ) -> Result<(), StorageError>;
-    fn load_events(&self, session_id: &SessionId) -> Result<Vec<NarrativeEvent>, StorageError>;
-
-    fn save_snapshot(
+    async fn load_events(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<NarrativeEvent>, StorageError>;
+    async fn save_snapshot(
         &self,
         session_id: &SessionId,
         revision: u64,
         state: &SessionState,
     ) -> Result<(), StorageError>;
-    fn load_latest_snapshot(
+    async fn load_latest_snapshot(
         &self,
         session_id: &SessionId,
     ) -> Result<Option<(u64, SessionState)>, StorageError>;
+    async fn save_provider_settings(&self, settings: &ProviderSettings)
+        -> Result<(), StorageError>;
+    async fn load_provider_settings(&self) -> Result<Option<ProviderSettings>, StorageError>;
+    async fn record_llm_call(&self, call: &LlmCallMetadata) -> Result<(), StorageError>;
 }

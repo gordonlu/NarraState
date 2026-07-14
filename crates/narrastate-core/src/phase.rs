@@ -19,10 +19,10 @@ impl InterrogationPhase {
         use InterrogationPhase::*;
         matches!(
             (self, target),
-            (Calm, Guarded | Defensive | Pressured | Cornered | Resolved)
-                | (Guarded, Defensive | Pressured | Cornered | Resolved)
-                | (Defensive, Pressured | Cornered | Resolved)
-                | (Pressured, Cornered | ConfessionEligible | Resolved)
+            (Calm, Guarded | Resolved)
+                | (Guarded, Defensive | Resolved)
+                | (Defensive, Pressured | Resolved)
+                | (Pressured, Cornered | Resolved)
                 | (Cornered, ConfessionEligible | Resolved)
                 | (ConfessionEligible, Resolved)
         )

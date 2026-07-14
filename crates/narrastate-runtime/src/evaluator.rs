@@ -1,11 +1,13 @@
 use narrastate_core::character::{CharacterDefinition, CharacterRuntimeState};
-use narrastate_core::evidence::EvidenceDefinition;
-use narrastate_core::id::{ClaimId, DisclosureId, EvidenceId, FactId};
+use narrastate_core::evidence::{CaseElement, EvidenceDefinition};
+use narrastate_core::id::{ClaimId, EvidenceId};
 use narrastate_core::phase::InterrogationPhase;
 use narrastate_core::transition::{
     InterpretedAction, PlayerIntent, TransitionReason, TransitionTuning,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+const CONTRADICTION_CONFIDENCE: f32 = 0.6;
 
 #[derive(Debug, Clone)]
 pub struct EvidenceImpact {
@@ -25,7 +27,6 @@ pub struct EvaluationResult {
     pub newly_contradicted_claims: Vec<ClaimId>,
     pub transition_reason: Option<TransitionReason>,
     pub proposed_phase: InterrogationPhase,
-    pub unlockable_disclosures: Vec<DisclosureId>,
 }
 
 pub struct EvidenceEvaluator {
@@ -37,230 +38,211 @@ impl EvidenceEvaluator {
         Self { tuning }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate(
         &self,
         action: &InterpretedAction,
         state: &CharacterRuntimeState,
-        character_def: &CharacterDefinition,
-        case_evidence: &BTreeMap<EvidenceId, EvidenceDefinition>,
-        _case_facts: &BTreeSet<FactId>,
+        character: &CharacterDefinition,
+        evidence: &BTreeMap<EvidenceId, EvidenceDefinition>,
+        required_elements: &BTreeSet<CaseElement>,
     ) -> EvaluationResult {
-        let confronted = &state.confronted_evidence;
-        let mut max_impact = 0.0f32;
-        let mut _total_stress_delta = 0i32;
-        let mut _total_defense_delta = 0i32;
-        let mut _total_composure_delta = 0i32;
-        let mut impact_details: Option<EvidenceImpact> = None;
-        let mut newly_contradicted: Vec<ClaimId> = Vec::new();
-        let mut seen_evidence = BTreeSet::new();
+        let mut used = BTreeSet::new();
+        let mut total_impact = 0.0f32;
+        let mut total_base = 0.0f32;
+        let mut total_chain = 0.0f32;
+        let mut any_novel = false;
+        let mut newly_contradicted = BTreeSet::new();
 
-        let trust_sign = match action.tone {
-            narrastate_core::PlayerTone::Aggressive | narrastate_core::PlayerTone::Accusatory => -1,
-            narrastate_core::PlayerTone::Friendly => 1,
-            _ => 0,
-        };
-        let trust_abs = match action.tone {
-            narrastate_core::PlayerTone::Aggressive => 5,
-            narrastate_core::PlayerTone::Accusatory => 8,
-            narrastate_core::PlayerTone::Friendly => 3,
-            _ => 0,
-        };
-        let total_trust_delta = (trust_sign * trust_abs)
-            .clamp(self.tuning.trust_range_min, self.tuning.trust_range_max);
-
+        let previously_invalidated = invalidated_claims(character, &state.confronted_evidence);
         for usage in &action.evidence_usage {
-            let ev_id = &usage.evidence_id;
-            if !seen_evidence.insert(ev_id.clone()) {
+            if !used.insert(usage.evidence_id.clone()) {
                 continue;
             }
-
-            let Some(ev_def) = case_evidence.get(ev_id) else {
+            let Some(item) = evidence.get(&usage.evidence_id) else {
                 continue;
             };
-
-            let already_confronted = confronted.contains(ev_id);
-
-            let proposition_match = if ev_def.supports.is_empty() { 0.5 } else { 1.0 };
-
-            let base_strength = self.tuning.reliability_weight * ev_def.reliability
-                + self.tuning.directness_weight * ev_def.directness
-                + self.tuning.exclusivity_weight * ev_def.exclusivity
-                + self.tuning.proposition_match_weight * proposition_match;
-
-            let novelty_multiplier = if already_confronted {
-                self.tuning.novelty_multiplier_repeat
-            } else {
+            let novel = !state.confronted_evidence.contains(&item.id);
+            let novelty = if novel {
                 self.tuning.novelty_multiplier_first
+            } else {
+                self.tuning.novelty_multiplier_repeat
             };
-
-            let is_relevant = ev_def
+            let relevant_claims: Vec<_> = item
                 .contradicts
                 .iter()
-                .any(|cid| character_def.claims.iter().any(|c| &c.id == cid));
-            let relevance_multiplier = if is_relevant { 1.0 } else { 0.2 };
-
-            let chain_bonus = if ev_def.contradicts.iter().any(|cid| {
-                character_def.claims.iter().any(|c| {
-                    &c.id == cid
-                        && state
-                            .spoken_claims
-                            .iter()
-                            .any(|sc| sc.claim_id == c.id && !sc.invalidated)
-                })
-            }) {
+                .filter(|claim| character.claims.iter().any(|defined| &defined.id == *claim))
+                .collect();
+            let explicitly_mapped = relevant_claims.iter().any(|claim| {
+                action.referenced_claims.contains(claim)
+                    || (action.intent == PlayerIntent::PresentEvidence
+                        && action.confidence >= CONTRADICTION_CONFIDENCE)
+            });
+            let relevant = !relevant_claims.is_empty();
+            let proposition_match = if explicitly_mapped { 1.0 } else { 0.0 };
+            let base = self.tuning.reliability_weight * item.reliability
+                + self.tuning.directness_weight * item.directness
+                + self.tuning.exclusivity_weight * item.exclusivity
+                + self.tuning.proposition_match_weight * proposition_match;
+            let chain = if novel
+                && explicitly_mapped
+                && relevant_claims.iter().any(|claim| {
+                    state
+                        .spoken_claims
+                        .iter()
+                        .any(|spoken| &spoken.claim_id == *claim && !spoken.invalidated)
+                }) {
                 self.tuning.chain_bonus
             } else {
                 0.0
             };
-
-            let interpretation_multiplier = action.confidence.clamp(
+            let confidence = action.confidence.clamp(
                 self.tuning.min_interpretation_multiplier,
                 self.tuning.max_interpretation_multiplier,
             );
+            let relevance = if relevant { 1.0 } else { 0.2 };
+            let impact = ((base * novelty + chain).clamp(0.0, 1.0)) * confidence * relevance;
+            total_impact += impact;
+            total_base += base;
+            total_chain += chain;
+            any_novel |= novel;
 
-            let impact = ((base_strength * novelty_multiplier + chain_bonus).clamp(0.0, 1.0))
-                * interpretation_multiplier
-                * relevance_multiplier;
-
-            let stress_delta = (impact
-                * (self.tuning.stress_per_impact_base
-                    - character_def.resilience as f32 * self.tuning.stress_resilience_reduction))
-                .round() as i32;
-            let defense_delta = (impact * self.tuning.defense_per_impact).round() as i32;
-            let composure_delta = (impact * self.tuning.composure_per_impact).round() as i32;
-
-            _total_stress_delta += stress_delta;
-            _total_defense_delta += defense_delta;
-            _total_composure_delta += composure_delta;
-
-            if impact > max_impact {
-                max_impact = impact;
-                impact_details = Some(EvidenceImpact {
-                    base_strength,
-                    novelty_multiplier,
-                    chain_bonus,
-                    final_impact: impact,
-                    stress_delta,
-                    defense_delta,
-                    composure_delta,
-                    trust_delta: total_trust_delta,
-                });
-            }
-
-            for cid in &ev_def.contradicts {
-                if character_def.claims.iter().any(|c| &c.id == cid)
-                    && !newly_contradicted.contains(cid)
-                {
-                    newly_contradicted.push(cid.clone());
+            if novel && explicitly_mapped && action.confidence >= CONTRADICTION_CONFIDENCE {
+                for claim in relevant_claims {
+                    if !previously_invalidated.contains(claim) {
+                        newly_contradicted.insert((*claim).clone());
+                    }
                 }
             }
         }
 
-        let reason = if !newly_contradicted.is_empty() {
+        total_impact = total_impact.clamp(0.0, 1.0);
+        let trust_delta = match action.tone {
+            narrastate_core::PlayerTone::Aggressive => -5,
+            narrastate_core::PlayerTone::Accusatory => -8,
+            narrastate_core::PlayerTone::Friendly => 3,
+            _ => 0,
+        }
+        .clamp(self.tuning.trust_range_min, self.tuning.trust_range_max);
+        let impact = (total_impact > 0.0).then(|| EvidenceImpact {
+            base_strength: total_base.clamp(0.0, 1.0),
+            novelty_multiplier: if any_novel {
+                self.tuning.novelty_multiplier_first
+            } else {
+                self.tuning.novelty_multiplier_repeat
+            },
+            chain_bonus: total_chain.clamp(0.0, 1.0),
+            final_impact: total_impact,
+            stress_delta: (total_impact
+                * (self.tuning.stress_per_impact_base
+                    - character.resilience as f32 * self.tuning.stress_resilience_reduction))
+                .round() as i32,
+            defense_delta: (total_impact * self.tuning.defense_per_impact).round() as i32,
+            composure_delta: (total_impact * self.tuning.composure_per_impact).round() as i32,
+            trust_delta,
+        });
+
+        let projected_stress = (state.stress as i32
+            + impact.as_ref().map_or(0, |value| value.stress_delta))
+        .clamp(0, 100) as u8;
+        let projected_defense = (state.defense_budget as i32
+            - impact.as_ref().map_or(0, |value| value.defense_delta))
+        .clamp(0, 100) as u8;
+        let mut confronted = state.confronted_evidence.clone();
+        confronted.extend(used);
+        let invalidated = invalidated_claims(character, &confronted);
+        let coverage = covered_elements(&confronted, evidence);
+        let has_action_disclosure = state.revealed_disclosures.iter().any(|id| {
+            character.disclosure_graph.nodes.iter().any(|node| {
+                &node.id == id
+                    && matches!(
+                        node.kind,
+                        narrastate_core::DisclosureKind::PartialAction
+                            | narrastate_core::DisclosureKind::FullAction
+                    )
+            })
+        });
+        let proposed_phase = next_phase(
+            state.phase,
+            projected_stress,
+            projected_defense,
+            invalidated.len(),
+            required_elements.is_subset(&coverage),
+            has_action_disclosure,
+            character.disclosure_graph.confession_node().is_some(),
+            action.intent,
+        );
+        let transition_reason = if !newly_contradicted.is_empty() {
             Some(TransitionReason::PriorClaimContradicted)
-        } else if !action.evidence_usage.is_empty() {
+        } else if impact.is_some() {
             Some(TransitionReason::NewEvidencePresented)
+        } else if !action.evidence_usage.is_empty() {
+            Some(TransitionReason::RepeatedQuestionNoNewInformation)
         } else if action.intent == PlayerIntent::Challenge {
             Some(TransitionReason::DirectChallenge)
+        } else if action.intent == PlayerIntent::Accuse {
+            Some(TransitionReason::AccusationSubmitted)
         } else {
             None
         };
 
-        let projected_stress = (state.stress as i32 + _total_stress_delta).clamp(0, 100) as u8;
-        let projected_defense =
-            (state.defense_budget as i32 - _total_defense_delta).clamp(0, 100) as u8;
-
-        let proposed_phase = self.determine_proposed_phase(
-            projected_stress,
-            projected_defense,
-            state,
-            character_def,
-            &newly_contradicted,
-        );
-
-        let unlockable = self.find_unlockable_disclosures(state, character_def);
-
         EvaluationResult {
-            impact: impact_details,
-            newly_contradicted_claims: newly_contradicted,
-            transition_reason: reason,
+            impact,
+            newly_contradicted_claims: newly_contradicted.into_iter().collect(),
+            transition_reason,
             proposed_phase,
-            unlockable_disclosures: unlockable,
         }
     }
+}
 
-    fn determine_proposed_phase(
-        &self,
-        stress: u8,
-        defense: u8,
-        state: &CharacterRuntimeState,
-        character_def: &CharacterDefinition,
-        newly_contradicted: &[ClaimId],
-    ) -> InterrogationPhase {
-        use InterrogationPhase::*;
+pub fn invalidated_claims(
+    character: &CharacterDefinition,
+    confronted: &BTreeSet<EvidenceId>,
+) -> BTreeSet<ClaimId> {
+    character
+        .claims
+        .iter()
+        .filter(|claim| {
+            claim
+                .invalidated_by
+                .iter()
+                .any(|id| confronted.contains(id))
+        })
+        .map(|claim| claim.id.clone())
+        .collect()
+}
 
-        let undermined_claims = character_def
-            .claims
-            .iter()
-            .filter(|c| {
-                c.invalidated_by
-                    .iter()
-                    .any(|eid| state.confronted_evidence.contains(eid))
-            })
-            .count();
-        let total_cracks = undermined_claims + newly_contradicted.len();
+pub fn covered_elements(
+    confronted: &BTreeSet<EvidenceId>,
+    evidence: &BTreeMap<EvidenceId, EvidenceDefinition>,
+) -> BTreeSet<CaseElement> {
+    confronted
+        .iter()
+        .filter_map(|id| evidence.get(id))
+        .flat_map(|item| item.elements.iter().copied())
+        .collect()
+}
 
-        let mut candidate = state.phase;
-
-        if (stress >= 15 || total_cracks > 0) && candidate < Guarded {
-            candidate = Guarded;
+#[allow(clippy::too_many_arguments)]
+fn next_phase(
+    current: InterrogationPhase,
+    stress: u8,
+    defense: u8,
+    cracks: usize,
+    elements_complete: bool,
+    action_disclosed: bool,
+    has_confession_path: bool,
+    intent: PlayerIntent,
+) -> InterrogationPhase {
+    use InterrogationPhase::*;
+    match current {
+        Calm if stress >= 15 || cracks > 0 || matches!(intent, PlayerIntent::Accuse) => Guarded,
+        Guarded if stress >= 30 || cracks >= 1 => Defensive,
+        Defensive if stress >= 50 && defense <= 65 => Pressured,
+        Pressured if stress >= 70 && cracks >= 2 => Cornered,
+        Cornered if has_confession_path && elements_complete && action_disclosed => {
+            ConfessionEligible
         }
-        if (stress >= 30 || total_cracks >= 1) && candidate < Defensive {
-            candidate = Defensive;
-        }
-        if stress >= 50 && defense <= 65 && candidate < Pressured {
-            candidate = Pressured;
-        }
-        if stress >= 70 && total_cracks >= 2 && candidate < Cornered {
-            candidate = Cornered;
-        }
-        if stress >= 85 && total_cracks >= 2 && candidate < ConfessionEligible {
-            candidate = ConfessionEligible;
-        }
-
-        if candidate > state.phase && state.phase.can_transition_to(candidate) {
-            candidate
-        } else {
-            state.phase
-        }
-    }
-
-    fn find_unlockable_disclosures(
-        &self,
-        state: &CharacterRuntimeState,
-        character_def: &CharacterDefinition,
-    ) -> Vec<DisclosureId> {
-        let graph = &character_def.disclosure_graph;
-        let mut unlockable = Vec::new();
-        let mut major_unlocked_this_turn = false;
-
-        for node in &graph.nodes {
-            if state.revealed_disclosures.contains(&node.id) {
-                continue;
-            }
-
-            if graph.major_disclosure_kinds().contains(&node.kind) && major_unlocked_this_turn {
-                continue;
-            }
-
-            if graph.is_unlockable(&node.id, &state.revealed_disclosures, state.phase) {
-                unlockable.push(node.id.clone());
-                if graph.major_disclosure_kinds().contains(&node.kind) {
-                    major_unlocked_this_turn = true;
-                }
-            }
-        }
-
-        unlockable
+        _ => current,
     }
 }

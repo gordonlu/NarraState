@@ -81,21 +81,21 @@ impl OutputValidator {
     pub fn template_fallback(&self, plan: &DialoguePlan) -> RendererOutput {
         use narrastate_core::DialogueAct::*;
         let utterance = match plan.act {
-            Answer => "I am answering your question.".into(),
-            Deny => "That's not true. I deny it.".into(),
-            Evade => "I don't recall that clearly.".into(),
-            Reframe => "Let me explain the situation differently.".into(),
-            ChallengeEvidence => "That evidence doesn't prove anything.".into(),
-            ShiftBlame => "Someone else must have done it.".into(),
+            Answer => "我会回答你的问题。".into(),
+            Deny => "这不是真的，我否认这一点。".into(),
+            Evade => "这件事我记得不太清楚。".into(),
+            Reframe => "事情并不是你说的那样。".into(),
+            ChallengeEvidence => "这份证据还不能证明你的结论。".into(),
+            ShiftBlame => "你应该再查查其他人。".into(),
             PartialAdmission => {
                 if plan.newly_revealed.is_some() {
-                    "Alright, I admit that much.".into()
+                    "好吧，这一点我承认。".into()
                 } else {
-                    "I admit to some involvement, but not everything.".into()
+                    "我承认有所牵涉，但事情不是你想的那样。".into()
                 }
             }
-            FullAdmission => "I confess. I did it.".into(),
-            AskForClarification => "What exactly are you asking?".into(),
+            FullAdmission => "我认罪，是我做的。".into(),
+            AskForClarification => "你具体想问什么？".into(),
             Silence => "...".into(),
         };
 
