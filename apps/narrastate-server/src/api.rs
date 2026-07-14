@@ -374,7 +374,9 @@ async fn create_session(
             "active_character": character_id.to_string(),
         }),
     };
-    let _ = app.repo.append_events(&session_id, &[event]);
+    if let Err(e) = app.repo.append_events(&session_id, &[event]) {
+        tracing::warn!("Failed to record session_created event: {e}");
+    }
 
     Ok(Json(CreateSessionResponse {
         session_id,
@@ -520,7 +522,9 @@ async fn process_action(
         _ => internal_error(e),
     })?;
 
-    let _ = app.repo.append_events(&sid, &events);
+    if let Err(e) = app.repo.append_events(&sid, &events) {
+        tracing::warn!("Failed to record turn_processed event: {e}");
+    }
 
     let stress_delta = result.diff.stress_after as i32 - result.diff.stress_before as i32;
     let composure_delta = result.diff.composure_after as i32 - result.diff.composure_before as i32;
@@ -615,7 +619,9 @@ async fn make_accusation(
         schema_version: 1,
         payload: serde_json::json!({"target": target_str}),
     };
-    let _ = app.repo.append_events(&sid, &[event]);
+    if let Err(e) = app.repo.append_events(&sid, &[event]) {
+        tracing::warn!("Failed to record accusation event: {e}");
+    }
 
     Ok(Json(
         serde_json::json!({"status": "accusation_recorded", "turn_id": turn_id_str}),
@@ -683,7 +689,9 @@ async fn restart_session(
         revision: 0,
     };
 
-    let _ = app.repo.update_session(&new_session);
+    if let Err(e) = app.repo.update_session(&new_session) {
+        tracing::warn!("Failed to persist restarted session: {e}");
+    }
 
     Ok(Json(SessionResponse::from(new_session)))
 }

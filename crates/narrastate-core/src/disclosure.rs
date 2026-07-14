@@ -39,7 +39,7 @@ pub enum DisclosurePrerequisite {
     Disclosure { disclosure: DisclosureId },
     EvidencePresented { facts: Vec<FactId> },
     PhaseAtLeast { min_phase: InterrogationPhase },
-    ClaimInvalidated { claim: DisclosureId },
+    ClaimInvalidated { disclosure: DisclosureId },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -70,7 +70,7 @@ impl DisclosureGraph {
                         });
                     }
                 }
-                if let DisclosurePrerequisite::ClaimInvalidated { claim: dep_id } = prereq {
+                if let DisclosurePrerequisite::ClaimInvalidated { disclosure: dep_id } = prereq {
                     if !node_ids.contains(dep_id) {
                         errors.push(CycleError::MissingPrerequisiteNode {
                             node: node.id.clone(),
@@ -122,7 +122,7 @@ impl DisclosureGraph {
             for prereq in &node.prerequisites {
                 match prereq {
                     DisclosurePrerequisite::Disclosure { disclosure: dep_id }
-                    | DisclosurePrerequisite::ClaimInvalidated { claim: dep_id } => {
+                    | DisclosurePrerequisite::ClaimInvalidated { disclosure: dep_id } => {
                         self.dfs_check(dep_id, visited, stack)?;
                     }
                     _ => {}

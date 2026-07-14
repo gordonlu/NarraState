@@ -72,7 +72,13 @@ impl TransitionEngine {
         }
 
         if evaluation.proposed_phase != state.phase {
-            let _ = state.set_phase(evaluation.proposed_phase, turn_id);
+            if let Err(e) = state.set_phase(evaluation.proposed_phase, turn_id) {
+                tracing::warn!(
+                    "Phase transition rejected: {e:?} (from {:?} to {:?})",
+                    state.phase,
+                    evaluation.proposed_phase
+                );
+            }
         }
 
         let mut newly_revealed = Vec::new();

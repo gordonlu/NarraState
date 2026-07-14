@@ -810,7 +810,7 @@ fn test_disclosure_prerequisite_variants() {
         min_phase: InterrogationPhase::Defensive,
     };
     let _c = DisclosurePrerequisite::ClaimInvalidated {
-        claim: DisclosureId::from("c1"),
+        disclosure: DisclosureId::from("some_disclosure"),
     };
 }
 
