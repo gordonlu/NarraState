@@ -1,0 +1,12 @@
+[package]
+name = "narrastate-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+narrastate-core = { path = "../narrastate-core" }
+narrastate-runtime = { path = "../narrastate-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
