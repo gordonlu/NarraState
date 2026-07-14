@@ -484,6 +484,7 @@ fn valid_case() -> CaseDefinition {
         entities: vec![],
         facts: vec![Fact {
             id: fact_id.clone(),
+            display_text: None,
             subject: "luo-cheng".into(),
             predicate: "was_in".to_string(),
             object: FactValue::String("control_room".to_string()),

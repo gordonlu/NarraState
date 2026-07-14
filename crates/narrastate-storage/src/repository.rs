@@ -504,6 +504,65 @@ impl Repository for SqliteRepository {
             .execute(&self.pool).await.map_err(map_database)?;
         Ok(())
     }
+
+    async fn load_llm_calls(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<LlmCallMetadata>, StorageError> {
+        type LlmRow = (
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            String,
+            Option<String>,
+        );
+        let rows: Vec<LlmRow> = sqlx::query_as(
+            "SELECT call_id, turn_id, purpose, provider, model, prompt_hash, latency_ms,
+                    input_tokens, output_tokens, status, error_code
+             FROM llm_calls WHERE session_id = ? ORDER BY created_at, call_id",
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_database)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    call_id,
+                    turn_id,
+                    purpose,
+                    provider,
+                    model,
+                    prompt_hash,
+                    latency_ms,
+                    input_tokens,
+                    output_tokens,
+                    status,
+                    error_code,
+                )| LlmCallMetadata {
+                    call_id,
+                    session_id: *session_id,
+                    turn_id,
+                    purpose,
+                    provider,
+                    model,
+                    prompt_hash,
+                    latency_ms: latency_ms as u64,
+                    input_tokens: input_tokens.map(|value| value as u64),
+                    output_tokens: output_tokens.map(|value| value as u64),
+                    status,
+                    error_code,
+                },
+            )
+            .collect())
+    }
 }
 
 fn map_database(error: sqlx::Error) -> StorageError {

@@ -223,4 +223,8 @@ pub trait Repository: Send + Sync {
         -> Result<(), StorageError>;
     async fn load_provider_settings(&self) -> Result<Option<ProviderSettings>, StorageError>;
     async fn record_llm_call(&self, call: &LlmCallMetadata) -> Result<(), StorageError>;
+    async fn load_llm_calls(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<LlmCallMetadata>, StorageError>;
 }

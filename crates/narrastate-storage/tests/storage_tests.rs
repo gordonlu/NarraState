@@ -130,6 +130,13 @@ async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
     })
     .await
     .expect("record metadata");
+    let calls = repo
+        .load_llm_calls(&state.session_id)
+        .await
+        .expect("load metadata");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].model, "test-model");
+    assert_eq!(calls[0].input_tokens, Some(10));
 }
 
 #[tokio::test]

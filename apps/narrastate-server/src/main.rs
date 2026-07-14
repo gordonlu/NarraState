@@ -16,6 +16,7 @@ use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
 use narrastate_runtime::{DialoguePlanner, TransitionEngine};
 use narrastate_server::api::{router, AppState};
 use narrastate_storage::SqliteRepository;
+use tower_http::services::{ServeDir, ServeFile};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,7 +25,9 @@ fn main() {
         eprintln!("Commands:");
         eprintln!("  validate <path>        Validate a case.json file");
         eprintln!("  play --case <path>     Interactive interrogation (mock)");
-        eprintln!("  serve [--port <port>] [--db <path>] [--cases <dir>]  HTTP server");
+        eprintln!(
+            "  serve [--port <port>] [--db <path>] [--cases <dir>] [--web <dir>]  HTTP server"
+        );
         process::exit(1);
     }
 
@@ -52,6 +55,7 @@ async fn cmd_serve(args: &[String]) {
         .unwrap_or(3000u16);
     let mut db_path = std::env::var("DATABASE_URL").unwrap_or_else(|_| "narrastate.db".into());
     let mut cases_dir = "cases".to_string();
+    let mut web_dir = std::env::var("NARRASTATE_WEB_DIR").unwrap_or_else(|_| "web/dist".into());
 
     let mut i = 0;
     while i < args.len() {
@@ -70,6 +74,10 @@ async fn cmd_serve(args: &[String]) {
             "--cases" => {
                 i += 1;
                 cases_dir = args.get(i).cloned().unwrap_or_else(|| "cases".into());
+            }
+            "--web" => {
+                i += 1;
+                web_dir = args.get(i).cloned().unwrap_or_else(|| "web/dist".into());
             }
             _ => {}
         }
@@ -120,7 +128,9 @@ async fn cmd_serve(args: &[String]) {
     }
 
     let state = Arc::new(AppState::new(Arc::new(repo)));
-    let app = router(state);
+    let index = std::path::Path::new(&web_dir).join("index.html");
+    let static_files = ServeDir::new(&web_dir).not_found_service(ServeFile::new(index));
+    let app = router(state).fallback_service(static_files);
 
     let addr = format!("{host}:{port}");
     tracing::info!("NarraState server starting on {addr}");

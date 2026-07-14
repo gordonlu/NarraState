@@ -19,51 +19,62 @@
   "facts": [
     {
       "id": "fact_gallery_closed",
+      "display_text": "画廊于 21:40 闭馆",
       "subject": "gallery",
       "predicate": "closed_at",
       "object": "21:40",
+      "happened_at": { "hour": 21, "minute": 40 },
       "truth": "True",
       "visibility": "PublicAtStart",
       "tags": ["time", "location"]
     },
     {
       "id": "fact_painting_missing",
+      "display_text": "待拍画作确认失窃",
       "subject": "painting",
       "predicate": "is_missing",
       "object": true,
+      "happened_at": { "label": "闭馆后" },
       "truth": "True",
       "visibility": "PublicAtStart",
       "tags": ["crime"]
     },
     {
       "id": "fact_luo_assigned_cr",
+      "display_text": "罗成当晚负责中控室",
       "subject": "luo-cheng",
       "predicate": "assigned_to",
       "object": "control_room",
+      "happened_at": { "label": "当晚" },
       "truth": "True",
       "visibility": "PublicAtStart",
       "tags": ["background"]
     },
     {
       "id": "fact_card_used_2147",
+      "display_text": "罗成的复制门禁卡进入后区",
       "subject": "luo-cheng",
       "predicate": "used_card_at",
       "object": "21:47",
+      "happened_at": { "hour": 21, "minute": 47 },
       "truth": "True",
       "visibility": "Discoverable",
       "tags": ["evidence", "time"]
     },
     {
       "id": "fact_sensor_cmd_2143",
+      "display_text": "安保终端关闭装卸区传感器",
       "subject": "luo-cheng",
       "predicate": "issued_sensor_command_at",
       "object": "21:43",
+      "happened_at": { "hour": 21, "minute": 43 },
       "truth": "True",
       "visibility": "Discoverable",
       "tags": ["evidence", "time"]
     },
     {
       "id": "fact_mud_on_shoes",
+      "display_text": "罗成鞋底沾有装卸区红色湿泥",
       "subject": "luo-cheng",
       "predicate": "has_mud_on_shoes",
       "object": true,
@@ -73,6 +84,7 @@
     },
     {
       "id": "fact_fiber_on_box",
+      "display_text": "运输箱留有制服纤维和缺失纽扣",
       "subject": "transport_box",
       "predicate": "has_fiber_and_missing_button",
       "object": true,
@@ -82,6 +94,7 @@
     },
     {
       "id": "fact_pawn_chat",
+      "display_text": "罗成曾联系典当行询价",
       "subject": "luo-cheng",
       "predicate": "contacted_pawn_shop",
       "object": true,
@@ -91,15 +104,18 @@
     },
     {
       "id": "fact_luo_left_cr",
+      "display_text": "罗成在闭馆后离开中控室",
       "subject": "luo-cheng",
       "predicate": "left_control_room_between",
       "object": "21:40_and_21:45",
+      "happened_at": { "label": "21:40–21:45" },
       "truth": "True",
       "visibility": "Hidden",
       "tags": ["truth", "action"]
     },
     {
       "id": "fact_sensor_deactivated",
+      "display_text": "罗成停用了装卸区传感器",
       "subject": "luo-cheng",
       "predicate": "deactivated_loading_sensor",
       "object": true,
@@ -109,6 +125,7 @@
     },
     {
       "id": "fact_painting_removed",
+      "display_text": "画作被从运输箱中取出",
       "subject": "painting",
       "predicate": "removed_from_box",
       "object": true,
@@ -118,6 +135,7 @@
     },
     {
       "id": "fact_painting_hidden",
+      "display_text": "画作被藏入画廊储物间",
       "subject": "painting",
       "predicate": "hidden_in",
       "object": "storage_room",
@@ -127,6 +145,7 @@
     },
     {
       "id": "fact_luo_debt",
+      "display_text": "罗成背负急需偿还的债务",
       "subject": "luo-cheng",
       "predicate": "has_debt",
       "object": true,
@@ -136,6 +155,7 @@
     },
     {
       "id": "fact_shen_delayed",
+      "display_text": "沈安擅自推迟了画作状况报告",
       "subject": "shen-an",
       "predicate": "delayed_condition_report",
       "object": true,
@@ -145,6 +165,7 @@
     },
     {
       "id": "fact_lin_repaired",
+      "display_text": "林悦曾未经授权修复画框",
       "subject": "lin-yue",
       "predicate": "repaired_frame_unauthorized",
       "object": true,
@@ -154,6 +175,7 @@
     },
     {
       "id": "fact_shen_alibi",
+      "display_text": "保安证实沈安闭馆后停留在入口",
       "subject": "shen-an",
       "predicate": "was_with_security_guard",
       "object": true,
@@ -163,6 +185,7 @@
     },
     {
       "id": "fact_lin_alibi",
+      "display_text": "实习生证实林悦在修复室整理记录",
       "subject": "lin-yue",
       "predicate": "was_with_intern",
       "object": true,

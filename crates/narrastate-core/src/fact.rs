@@ -16,6 +16,8 @@ pub struct StoryTime {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Fact {
     pub id: FactId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_text: Option<String>,
     pub subject: EntityRef,
     pub predicate: String,
     pub object: FactValue,

@@ -96,6 +96,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(get_session_events),
         )
         .route(
+            "/api/v1/sessions/{session_id}/debug",
+            get(get_session_debug),
+        )
+        .route(
+            "/api/v1/sessions/{session_id}/conclusion",
+            get(get_conclusion),
+        )
+        .route(
             "/api/v1/sessions/{session_id}/actions",
             post(process_action),
         )
@@ -245,6 +253,7 @@ struct PublicCase {
 struct PublicSession {
     session_id: SessionId,
     case_id: CaseId,
+    mode: SessionMode,
     status: SessionStatus,
     current_turn: u32,
     active_character: Option<CharacterId>,
@@ -253,6 +262,24 @@ struct PublicSession {
     conversation: Vec<DialogueEntry>,
     accusations: Vec<Accusation>,
     revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct DebugSessionResponse {
+    character_states: BTreeMap<CharacterId, CharacterRuntimeState>,
+    events: Vec<NarrativeEvent>,
+    llm_calls: Vec<LlmCallMetadata>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConclusionResponse {
+    result: AccusationResult,
+    epilogue: String,
+    truth_timeline: Vec<Fact>,
+    decisive_evidence: Vec<PublicEvidence>,
+    reasoning: String,
+    confessed: bool,
+    turn_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -485,6 +512,83 @@ async fn get_session_events(
             })
             .collect(),
     ))
+}
+
+async fn get_session_debug(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<DebugSessionResponse>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    let session = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let events = state
+        .repo
+        .load_events(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let llm_calls = state
+        .repo
+        .load_llm_calls(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(DebugSessionResponse {
+        character_states: session.character_states,
+        events,
+        llm_calls,
+    }))
+}
+
+async fn get_conclusion(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<ConclusionResponse>, ApiError> {
+    let session_id = parse_session_id(&session_id)?;
+    let session = state
+        .repo
+        .recover_session(&session_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    if session.status != SessionStatus::Resolved {
+        return Err(ApiError::validation("session has not been resolved"));
+    }
+    let case = state
+        .repo
+        .load_case(&session.case_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let accusation = session
+        .accusations
+        .last()
+        .ok_or_else(|| ApiError::internal("resolved session has no accusation"))?;
+    let selected: BTreeSet<_> = accusation.evidence_ids.iter().collect();
+    let decisive_evidence = case
+        .evidence
+        .iter()
+        .filter(|item| selected.contains(&item.id))
+        .map(public_evidence)
+        .collect();
+    let confessed = accusation.result == AccusationResult::CaseProvenWithConfession;
+    Ok(Json(ConclusionResponse {
+        result: accusation.result.clone(),
+        epilogue: case
+            .ending
+            .as_ref()
+            .map(|ending| ending.epilogue.clone())
+            .unwrap_or_else(|| "案件已经结束。".into()),
+        truth_timeline: case
+            .facts
+            .iter()
+            .filter(|fact| fact.truth == narrastate_core::fact::TruthValue::True)
+            .cloned()
+            .collect(),
+        decisive_evidence,
+        reasoning: accusation.reasoning.clone(),
+        confessed,
+        turn_count: session.current_turn,
+    }))
 }
 
 async fn process_action(
@@ -1088,6 +1192,7 @@ fn public_session(session: &SessionState, case: &CaseDefinition) -> PublicSessio
     PublicSession {
         session_id: session.session_id,
         case_id: session.case_id.clone(),
+        mode: session.mode,
         status: session.status,
         current_turn: session.current_turn,
         active_character: session.active_character.clone(),
@@ -1492,5 +1597,69 @@ mod tests {
             AccusationResult::CaseProvenWithoutConfession
         );
         assert_eq!(proven.0.session.status, SessionStatus::Resolved);
+    }
+
+    #[tokio::test]
+    async fn developer_endpoint_is_explicit_and_contains_trace_data() {
+        let (state, session, _) = fixture().await;
+        execute_action(
+            &state,
+            session.session_id,
+            action(
+                0,
+                ClientActionId::new(),
+                &["ev_card_log"],
+                "门禁记录怎么解释？",
+            ),
+        )
+        .await
+        .unwrap();
+        let debug = get_session_debug(State(state), Path(session.session_id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert!(debug
+            .character_states
+            .contains_key(&CharacterId::from("luo-cheng")));
+        assert!(debug
+            .events
+            .iter()
+            .any(|event| event.event_type == NarrativeEventKind::ActionInterpreted));
+        assert!(debug.llm_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn conclusion_is_hidden_until_resolved_then_returns_selected_evidence() {
+        let (state, session, _) = fixture().await;
+        let active_error =
+            get_conclusion(State(state.clone()), Path(session.session_id.to_string()))
+                .await
+                .expect_err("active session must not expose truth");
+        assert_eq!(active_error.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let _ = make_accusation(
+            State(state.clone()),
+            Path(session.session_id.to_string()),
+            Json(AccusationRequest {
+                expected_revision: 0,
+                target_character_id: CharacterId::from("luo-cheng"),
+                evidence_ids: vec![
+                    EvidenceId::from("ev_card_log"),
+                    EvidenceId::from("ev_fiber"),
+                    EvidenceId::from("ev_pawn_contact"),
+                ],
+                reasoning: "完整证据链".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let report = get_conclusion(State(state), Path(session.session_id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(report.result, AccusationResult::CaseProvenWithoutConfession);
+        assert_eq!(report.decisive_evidence.len(), 3);
+        assert!(!report.epilogue.is_empty());
+        assert!(!report.truth_timeline.is_empty());
     }
 }

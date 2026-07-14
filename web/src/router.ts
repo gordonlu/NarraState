@@ -8,6 +8,21 @@ const router = createRouter({
       name: 'home',
       component: () => import('./pages/HomePage.vue'),
     },
+    {
+      path: '/cases/:caseId',
+      name: 'case-brief',
+      component: () => import('./pages/CaseBriefPage.vue'),
+    },
+    {
+      path: '/sessions/:sessionId',
+      name: 'investigation',
+      component: () => import('./pages/InvestigationPage.vue'),
+    },
+    {
+      path: '/sessions/:sessionId/conclusion',
+      name: 'conclusion',
+      component: () => import('./pages/ConclusionPage.vue'),
+    },
   ],
 })
 
