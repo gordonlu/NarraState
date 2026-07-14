@@ -33,7 +33,8 @@ impl SqliteRepository {
     }
 
     pub fn new_in_memory() -> Result<Self, StorageError> {
-        Self::new("file::memory:?cache=shared")
+        let unique = uuid::Uuid::new_v4().as_simple().to_string();
+        Self::new(&format!("file:mem{unique}?mode=memory&cache=shared"))
     }
 
     fn block<T>(
