@@ -31,3 +31,15 @@ The implemented architecture and dependency boundaries are documented in `docs/a
 12. **Variant selection is deterministic and private.** The selector algorithm is versioned, a fixed seed must reproduce the same result, and normal player DTOs must not reveal the variant or responsible character.
 
 13. **Golden cases are static.** They may be authored with AI assistance, but CI and compiler/simulator tests must consume committed files without calling an LLM.
+
+## Helping a User Start NarraState
+
+When a user asks an agent to start, run, or try the application:
+
+1. From the repository root, use `./start.sh` on Linux/macOS or `.\start.ps1` on Windows. Do not invent a different startup sequence unless this entry point fails.
+2. Wait for the server to report that it is listening, then give the user `http://127.0.0.1:3000`.
+3. Never ask the user to paste an API Key into chat, a command argument, source code, or a tracked file.
+4. Tell the user to open **设置** in the Web UI and enter the OpenAI-compatible Base URL, model, and API Key there. The server persists it locally in `data/provider.env` and never returns the plaintext value.
+5. Text and image providers are configured independently. Do not reuse one provider's key for the other unless the user explicitly chooses to do so in the UI.
+6. If no provider is configured, start the app normally and explain that Mock mode remains available.
+7. If a prerequisite is missing, report the exact missing command (`npm` or `cargo`) and the official installation requirement. Do not silently switch to Docker or install system software without permission.
