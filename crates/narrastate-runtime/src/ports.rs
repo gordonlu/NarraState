@@ -2,6 +2,10 @@ use async_trait::async_trait;
 use narrastate_core::case::CaseDefinition;
 use narrastate_core::id::{CaseId, ClientActionId, SessionId};
 use narrastate_core::session::{NarrativeEvent, SessionState};
+use narrastate_core::{
+    CaseInstance, GeneratedCaseDraft, GeneratedVisualType, GenerationJobId,
+    GenerationRepairRequest, GenerationRequest, GenerationStatus,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -122,6 +126,42 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<ProviderResponse<serde_json::Value>, ProviderError>;
 }
 
+#[async_trait]
+pub trait CaseGenerationProvider: Send + Sync {
+    async fn generate_draft(
+        &self,
+        request: &GenerationRequest,
+    ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError>;
+
+    async fn repair_draft(
+        &self,
+        request: &GenerationRepairRequest,
+    ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationRequest {
+    pub visual_type: GeneratedVisualType,
+    pub prompt: String,
+    pub alt_text: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedImageAsset {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[async_trait]
+pub trait ImageGenerationProvider: Send + Sync {
+    async fn generate_image(
+        &self,
+        request: &ImageGenerationRequest,
+    ) -> Result<GeneratedImageAsset, ProviderError>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 pub enum StorageError {
     #[error("Not found: {0}")]
@@ -147,6 +187,13 @@ pub struct ProviderSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageProviderSettings {
+    pub enabled: bool,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmCallMetadata {
     pub call_id: String,
     pub session_id: SessionId,
@@ -160,6 +207,38 @@ pub struct LlmCallMetadata {
     pub output_tokens: Option<u64>,
     pub status: String,
     pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledCaseRecord {
+    pub case_id: CaseId,
+    pub case_version: String,
+    pub source_path: String,
+    pub schema_version: String,
+    pub template_content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyBackfillReport {
+    pub migrated_sessions: usize,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationJobRecord {
+    pub job_id: GenerationJobId,
+    pub status: GenerationStatus,
+    pub request_json: String,
+    pub drafts_json: String,
+    pub status_events_json: String,
+    pub validation_report_json: Option<String>,
+    pub result_path: Option<String>,
+    pub attempt_count: u32,
+    pub repair_count: u32,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +279,15 @@ pub trait Repository: Send + Sync {
     async fn save_case(&self, case: &CaseDefinition) -> Result<(), StorageError>;
     async fn load_case(&self, case_id: &CaseId) -> Result<CaseDefinition, StorageError>;
     async fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError>;
+    async fn install_case(&self, case: &InstalledCaseRecord) -> Result<(), StorageError>;
+    async fn list_installed_cases(&self) -> Result<Vec<InstalledCaseRecord>, StorageError>;
+    async fn save_case_instance(&self, instance: &CaseInstance) -> Result<(), StorageError>;
+    async fn load_case_instance(
+        &self,
+        instance_id: &narrastate_core::CaseInstanceId,
+    ) -> Result<CaseInstance, StorageError>;
+    async fn backfill_legacy_session_instances(&self)
+        -> Result<LegacyBackfillReport, StorageError>;
     async fn append_events(
         &self,
         session_id: &SessionId,
@@ -222,6 +310,19 @@ pub trait Repository: Send + Sync {
     async fn save_provider_settings(&self, settings: &ProviderSettings)
         -> Result<(), StorageError>;
     async fn load_provider_settings(&self) -> Result<Option<ProviderSettings>, StorageError>;
+    async fn save_image_provider_settings(
+        &self,
+        settings: &ImageProviderSettings,
+    ) -> Result<(), StorageError>;
+    async fn load_image_provider_settings(
+        &self,
+    ) -> Result<Option<ImageProviderSettings>, StorageError>;
+    async fn save_generation_job(&self, job: &GenerationJobRecord) -> Result<(), StorageError>;
+    async fn load_generation_job(
+        &self,
+        job_id: &GenerationJobId,
+    ) -> Result<GenerationJobRecord, StorageError>;
+    async fn fail_interrupted_generation_jobs(&self) -> Result<u64, StorageError>;
     async fn record_llm_call(&self, call: &LlmCallMetadata) -> Result<(), StorageError>;
     async fn load_llm_calls(
         &self,

@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CaseManifest",
+  "type": "object",
+  "required": [
+    "default_variant_id",
+    "entry",
+    "generated",
+    "id",
+    "language",
+    "schema_version",
+    "title",
+    "variant_count",
+    "version"
+  ],
+  "properties": {
+    "assets": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AssetManifestEntry"
+      }
+    },
+    "default_variant_id": {
+      "$ref": "#/definitions/VariantId"
+    },
+    "entry": {
+      "type": "string"
+    },
+    "generated": {
+      "type": "boolean"
+    },
+    "id": {
+      "$ref": "#/definitions/CaseId"
+    },
+    "language": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "variant_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "version": {
+      "type": "string"
+    },
+    "visual_assets": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/VisualAssetManifestEntry"
+      }
+    }
+  },
+  "definitions": {
+    "AssetManifestEntry": {
+      "type": "object",
+      "required": [
+        "content_hash",
+        "path"
+      ],
+      "properties": {
+        "content_hash": {
+          "$ref": "#/definitions/ContentHash"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "AssetSemanticRole": {
+      "type": "string",
+      "enum": [
+        "decorative"
+      ]
+    },
+    "CaseId": {
+      "description": "Author-provided stable case identifier.",
+      "type": "string"
+    },
+    "ContentHash": {
+      "description": "Canonical SHA-256 content hash.",
+      "type": "string"
+    },
+    "GeneratedVisualType": {
+      "type": "string",
+      "enum": [
+        "case_cover",
+        "chapter_illustration",
+        "scene_background",
+        "location_atmosphere",
+        "character_portrait",
+        "transition_illustration",
+        "ending_illustration"
+      ]
+    },
+    "VariantId": {
+      "description": "Author-provided stable solution variant identifier.",
+      "type": "string"
+    },
+    "VisualAssetId": {
+      "description": "Stable identifier for a decorative visual asset.",
+      "type": "string"
+    },
+    "VisualAssetManifestEntry": {
+      "type": "object",
+      "required": [
+        "alt_text",
+        "content_hash",
+        "id",
+        "path",
+        "shared_across_variants",
+        "visual_type"
+      ],
+      "properties": {
+        "alt_text": {
+          "type": "string"
+        },
+        "content_hash": {
+          "$ref": "#/definitions/ContentHash"
+        },
+        "id": {
+          "$ref": "#/definitions/VisualAssetId"
+        },
+        "path": {
+          "type": "string"
+        },
+        "semantic_role": {
+          "default": "decorative",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AssetSemanticRole"
+            }
+          ]
+        },
+        "shared_across_variants": {
+          "type": "boolean"
+        },
+        "visual_type": {
+          "$ref": "#/definitions/GeneratedVisualType"
+        }
+      }
+    }
+  }
+}

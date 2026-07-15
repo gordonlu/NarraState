@@ -1052,6 +1052,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "narrastate-case"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "narrastate-core",
+ "narrastate-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "narrastate-core"
 version = "0.1.0"
 dependencies = [
@@ -1068,9 +1084,11 @@ name = "narrastate-provider"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "narrastate-core",
  "narrastate-runtime",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",
@@ -1096,10 +1114,12 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "narrastate-case",
  "narrastate-core",
  "narrastate-provider",
  "narrastate-runtime",
  "narrastate-storage",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -1119,6 +1139,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "narrastate-case",
  "narrastate-core",
  "narrastate-runtime",
  "serde",

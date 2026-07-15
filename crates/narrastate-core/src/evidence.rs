@@ -36,10 +36,13 @@ pub struct EvidenceDefinition {
 )]
 pub enum CaseElement {
     Identity,
+    Access,
     Opportunity,
     Means,
     Action,
+    Motive,
     Intent,
+    Causation,
     Concealment,
 }
 

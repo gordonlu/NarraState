@@ -76,6 +76,15 @@ macro_rules! uuid_id {
 }
 
 string_id!(CaseId, "Author-provided stable case identifier.");
+string_id!(
+    VariantId,
+    "Author-provided stable solution variant identifier."
+);
+string_id!(ContentHash, "Canonical SHA-256 content hash.");
+string_id!(
+    VisualAssetId,
+    "Stable identifier for a decorative visual asset."
+);
 string_id!(CharacterId, "Author-provided stable character identifier.");
 string_id!(FactId, "Author-provided stable fact identifier.");
 string_id!(EvidenceId, "Author-provided stable evidence identifier.");
@@ -95,6 +104,14 @@ string_id!(
 string_id!(PropositionRef, "Reference to a proposition by ID.");
 
 uuid_id!(SessionId, "UUID for a game session.");
+uuid_id!(
+    CaseInstanceId,
+    "UUID for an immutable compiled case instance."
+);
+uuid_id!(
+    GenerationJobId,
+    "UUID for one non-authoritative case generation job."
+);
 uuid_id!(TurnId, "UUID for a single turn.");
 uuid_id!(
     ClientActionId,

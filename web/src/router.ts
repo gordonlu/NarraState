@@ -14,6 +14,11 @@ const router = createRouter({
       component: () => import('./pages/CaseBriefPage.vue'),
     },
     {
+      path: '/generate',
+      name: 'case-generation',
+      component: () => import('./pages/CaseGenerationPage.vue'),
+    },
+    {
       path: '/sessions/:sessionId',
       name: 'investigation',
       component: () => import('./pages/InvestigationPage.vue'),

@@ -1,0 +1,12 @@
+{
+  "id": "rain-gallery-variants",
+  "version": "1.0.0",
+  "schema_version": "0.2",
+  "title": "Invalid Golden: hidden-required-evidence",
+  "language": "zh-CN",
+  "default_variant_id": "variant-luo",
+  "variant_count": 3,
+  "generated": false,
+  "entry": "case.json",
+  "assets": []
+}

@@ -1,9 +1,10 @@
 use narrastate_core::{
-    ClientActionId, NarrativeEvent, NarrativeEventKind, NarrativeEventPayload, SessionId,
-    SessionMode, SessionState, SessionStatus,
+    ClientActionId, GenerationJobId, GenerationStatus, NarrativeEvent, NarrativeEventKind,
+    NarrativeEventPayload, Seed, SessionId, SessionMode, SessionState, SessionStatus, VariantId,
 };
 use narrastate_runtime::ports::{
-    CommitOutcome, LlmCallMetadata, ProviderSettings, Repository, StorageError,
+    CommitOutcome, GenerationJobRecord, ImageProviderSettings, InstalledCaseRecord,
+    LlmCallMetadata, ProviderSettings, Repository, StorageError,
 };
 use narrastate_storage::SqliteRepository;
 use uuid::Uuid;
@@ -19,6 +20,7 @@ fn session(case: &narrastate_core::CaseDefinition) -> SessionState {
     SessionState {
         session_id: SessionId::new(),
         case_id: case.id.clone(),
+        instance_id: None,
         mode: SessionMode::Mock,
         status: SessionStatus::Active,
         current_turn: 0,
@@ -51,6 +53,14 @@ fn session(case: &narrastate_core::CaseDefinition) -> SessionState {
         accusations: Vec::new(),
         revision: 0,
     }
+}
+
+fn frozen_instance(seed: u64) -> narrastate_core::CaseInstance {
+    let template = narrastate_case::adapt_v01(load_case(), "1.0.0", VariantId::from("classic"))
+        .expect("legacy adapter");
+    let compiled =
+        narrastate_case::compile(&template, &VariantId::from("classic")).expect("compile case");
+    narrastate_case::freeze_case(compiled, Seed(seed))
 }
 
 fn created_event(state: &SessionState) -> NarrativeEvent {
@@ -113,6 +123,16 @@ async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
         .expect("load settings")
         .expect("settings exist");
     assert_eq!(loaded_settings.model, "test-model");
+    repo.save_image_provider_settings(&ImageProviderSettings {
+        enabled: true,
+        base_url: "https://images.example.invalid/v1".into(),
+        model: "image-model".into(),
+    })
+    .await
+    .unwrap();
+    let image_settings = repo.load_image_provider_settings().await.unwrap().unwrap();
+    assert_eq!(image_settings.model, "image-model");
+    assert_eq!(loaded_settings.model, "test-model");
 
     repo.record_llm_call(&LlmCallMetadata {
         call_id: Uuid::new_v4().to_string(),
@@ -137,6 +157,183 @@ async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].model, "test-model");
     assert_eq!(calls[0].input_tokens, Some(10));
+}
+
+#[tokio::test]
+async fn frozen_instance_roundtrips_u64_seed_as_text() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let instance = frozen_instance(u64::MAX);
+    repo.save_case_instance(&instance).await.unwrap();
+
+    let loaded = repo
+        .load_case_instance(&instance.instance_id)
+        .await
+        .unwrap();
+    assert_eq!(loaded.seed, Seed(u64::MAX));
+    assert_eq!(loaded.instance_hash, instance.instance_hash);
+    assert_eq!(
+        loaded.compiled_case.definition.title,
+        instance.compiled_case.definition.title
+    );
+}
+
+#[tokio::test]
+async fn installed_case_version_cannot_silently_change_content() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let mut record = InstalledCaseRecord {
+        case_id: narrastate_core::CaseId::from("rain-gallery"),
+        case_version: "1.0.0".into(),
+        source_path: "/first/path".into(),
+        schema_version: "0.2".into(),
+        template_content_hash: "sha256:first".into(),
+    };
+    repo.install_case(&record).await.unwrap();
+    record.source_path = "/moved/path".into();
+    repo.install_case(&record).await.unwrap();
+    let installed = repo.list_installed_cases().await.unwrap();
+    assert_eq!(installed[0].source_path, "/moved/path");
+
+    record.template_content_hash = "sha256:different".into();
+    let error = repo
+        .install_case(&record)
+        .await
+        .expect_err("same version cannot change semantic content");
+    assert!(matches!(error, StorageError::Constraint(_)));
+}
+
+#[tokio::test]
+async fn frozen_instance_is_insert_only() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let instance = frozen_instance(42);
+    repo.save_case_instance(&instance).await.unwrap();
+    let error = repo
+        .save_case_instance(&instance)
+        .await
+        .expect_err("instance ID must be immutable");
+    assert!(matches!(error, StorageError::Constraint(_)));
+}
+
+#[tokio::test]
+async fn corrupted_compiled_snapshot_is_rejected_before_storage() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let mut instance = frozen_instance(42);
+    instance.compiled_case.definition.title = "tampered".into();
+    let error = repo
+        .save_case_instance(&instance)
+        .await
+        .expect_err("hash mismatch must fail");
+    assert!(matches!(error, StorageError::Constraint(_)));
+}
+
+#[tokio::test]
+async fn session_instance_foreign_key_requires_frozen_snapshot_first() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let case = load_case();
+    repo.save_case(&case).await.unwrap();
+    let instance = frozen_instance(42);
+    let mut state = session(&case);
+    state.instance_id = Some(instance.instance_id);
+    let error = repo
+        .create_session(&state, &[created_event(&state)])
+        .await
+        .expect_err("session cannot reference a missing instance");
+    assert!(matches!(error, StorageError::Constraint(_)));
+}
+
+#[tokio::test]
+async fn installed_case_update_does_not_change_existing_session_instance() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let original = load_case();
+    repo.save_case(&original).await.unwrap();
+    let instance = frozen_instance(928_341);
+    repo.save_case_instance(&instance).await.unwrap();
+    let mut state = session(&original);
+    state.instance_id = Some(instance.instance_id);
+    repo.create_session(&state, &[created_event(&state)])
+        .await
+        .unwrap();
+
+    let mut updated = original;
+    updated.title = "磁盘上更新后的标题".into();
+    repo.save_case(&updated).await.unwrap();
+
+    let restored_session = repo.load_session(&state.session_id).await.unwrap();
+    let restored_instance = repo
+        .load_case_instance(&restored_session.instance_id.unwrap())
+        .await
+        .unwrap();
+    assert_ne!(
+        updated.title,
+        restored_instance.compiled_case.definition.title
+    );
+    assert_eq!(
+        restored_instance.compiled_case.definition.title,
+        instance.compiled_case.definition.title
+    );
+}
+
+#[tokio::test]
+async fn committed_turn_cannot_switch_or_remove_frozen_instance() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let case = load_case();
+    repo.save_case(&case).await.unwrap();
+    let instance = frozen_instance(42);
+    repo.save_case_instance(&instance).await.unwrap();
+    let mut state = session(&case);
+    state.instance_id = Some(instance.instance_id);
+    repo.create_session(&state, &[created_event(&state)])
+        .await
+        .unwrap();
+
+    state.instance_id = None;
+    state.revision = 1;
+    let error = repo
+        .commit_session(0, &state, &[])
+        .await
+        .expect_err("instance binding is immutable");
+    assert!(matches!(error, StorageError::Constraint(_)));
+    let restored = repo.load_session(&state.session_id).await.unwrap();
+    assert_eq!(restored.instance_id, Some(instance.instance_id));
+    assert_eq!(restored.revision, 0);
+}
+
+#[tokio::test]
+async fn migrations_are_idempotent_across_repository_reopen() {
+    let path = std::env::temp_dir().join(format!("narrastate-{}.db", Uuid::new_v4()));
+    SqliteRepository::new(path.to_str().unwrap()).await.unwrap();
+    SqliteRepository::new(path.to_str().unwrap()).await.unwrap();
+    std::fs::remove_file(&path).ok();
+    std::fs::remove_file(path.with_extension("db-shm")).ok();
+    std::fs::remove_file(path.with_extension("db-wal")).ok();
+}
+
+#[tokio::test]
+async fn legacy_session_backfill_freezes_database_case_before_disk_update() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let original = load_case();
+    repo.save_case(&original).await.unwrap();
+    let state = session(&original);
+    assert!(state.instance_id.is_none());
+    repo.create_session(&state, &[created_event(&state)])
+        .await
+        .unwrap();
+
+    let report = repo.backfill_legacy_session_instances().await.unwrap();
+    assert_eq!(report.migrated_sessions, 1);
+    assert_eq!(report.limitations.len(), 1);
+    let migrated = repo.load_session(&state.session_id).await.unwrap();
+    let instance_id = migrated.instance_id.expect("backfilled instance");
+
+    let mut updated = original;
+    updated.title = "new disk definition".into();
+    repo.save_case(&updated).await.unwrap();
+    let recovered = repo.recover_session(&state.session_id).await.unwrap();
+    assert_eq!(recovered.instance_id, Some(instance_id));
+    let instance = repo.load_case_instance(&instance_id).await.unwrap();
+    assert_ne!(instance.compiled_case.definition.title, updated.title);
+
+    let second = repo.backfill_legacy_session_instances().await.unwrap();
+    assert_eq!(second.migrated_sessions, 0);
 }
 
 #[tokio::test]
@@ -268,4 +465,35 @@ async fn successful_tenth_revision_creates_snapshot() {
         .expect("automatic snapshot");
     assert_eq!(revision, 10);
     assert_eq!(snapshot.revision, 10);
+}
+
+#[tokio::test]
+async fn generation_job_roundtrips_and_restart_fails_non_terminal_work() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let job_id = GenerationJobId::new();
+    let job = GenerationJobRecord {
+        job_id,
+        status: GenerationStatus::Repairing,
+        request_json: "{}".into(),
+        drafts_json: "[]".into(),
+        status_events_json: "[]".into(),
+        validation_report_json: None,
+        result_path: None,
+        attempt_count: 2,
+        repair_count: 1,
+        error_code: None,
+        error_message: None,
+        created_at: "2026-07-15T00:00:00Z".into(),
+        updated_at: "2026-07-15T00:00:01Z".into(),
+    };
+    repo.save_generation_job(&job).await.unwrap();
+    let loaded = repo.load_generation_job(&job.job_id).await.unwrap();
+    assert_eq!(loaded.status, GenerationStatus::Repairing);
+    assert_eq!(loaded.repair_count, 1);
+
+    assert_eq!(repo.fail_interrupted_generation_jobs().await.unwrap(), 1);
+    let failed = repo.load_generation_job(&job.job_id).await.unwrap();
+    assert_eq!(failed.status, GenerationStatus::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("GENERATION_INTERRUPTED"));
+    assert_eq!(repo.fail_interrupted_generation_jobs().await.unwrap(), 0);
 }

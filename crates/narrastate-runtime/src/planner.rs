@@ -13,6 +13,7 @@ pub struct DialoguePlan {
     pub allowed_claims: Vec<ClaimId>,
     pub allowed_facts: Vec<FactId>,
     pub newly_revealed: Option<DisclosureId>,
+    pub newly_revealed_facts: Vec<FactId>,
     pub forbidden_facts: Vec<FactId>,
 }
 
@@ -63,6 +64,7 @@ impl DialoguePlanner {
                 allowed_claims,
                 allowed_facts,
                 newly_revealed: None,
+                newly_revealed_facts: Vec::new(),
                 forbidden_facts,
             };
         }
@@ -84,6 +86,7 @@ impl DialoguePlanner {
                     allowed_claims,
                     allowed_facts,
                     newly_revealed: Some(id.clone()),
+                    newly_revealed_facts: node.reveals.clone(),
                     forbidden_facts,
                 };
             }
@@ -121,6 +124,7 @@ impl DialoguePlanner {
                     allowed_claims,
                     allowed_facts,
                     newly_revealed: None,
+                    newly_revealed_facts: Vec::new(),
                     forbidden_facts,
                 };
             }
@@ -132,6 +136,7 @@ impl DialoguePlanner {
             allowed_claims,
             allowed_facts,
             newly_revealed: None,
+            newly_revealed_facts: Vec::new(),
             forbidden_facts,
         }
     }

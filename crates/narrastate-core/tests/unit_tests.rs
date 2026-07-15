@@ -787,6 +787,7 @@ fn test_session_state_new_defaults() {
     let state = SessionState {
         session_id: sid,
         case_id: CaseId::from("test"),
+        instance_id: None,
         mode: SessionMode::Mock,
         status: SessionStatus::Active,
         current_turn: 0,

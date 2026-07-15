@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 narrastate-core = { path = "../../crates/narrastate-core" }
+narrastate-case = { path = "../../crates/narrastate-case" }
 narrastate-runtime = { path = "../../crates/narrastate-runtime" }
 narrastate-provider = { path = "../../crates/narrastate-provider" }
 narrastate-storage = { path = "../../crates/narrastate-storage" }
@@ -23,3 +24,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util.workspace = true
 tokio-stream.workspace = true
 sha2.workspace = true
+schemars.workspace = true

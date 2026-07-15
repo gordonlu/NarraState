@@ -2,8 +2,14 @@ use narrastate_core::evidence::EvidenceUse;
 use narrastate_core::id::{EvidenceId, FactId};
 use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone};
 use narrastate_core::ClaimId;
+use narrastate_core::{GeneratedCaseDraft, GenerationRepairRequest, GenerationRequest};
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 use crate::planner::DialoguePlan;
+use crate::ports::{CaseGenerationProvider, ProviderError, ProviderResponse, TokenUsage};
+use crate::ports::{GeneratedImageAsset, ImageGenerationProvider, ImageGenerationRequest};
+use async_trait::async_trait;
 
 pub struct MockInterpreter;
 
@@ -87,4 +93,75 @@ pub struct MockUtterance {
     pub utterance: String,
     pub expressed_claim_ids: Vec<ClaimId>,
     pub acknowledged_fact_ids: Vec<FactId>,
+}
+pub struct MockCaseGenerationProvider {
+    responses: Mutex<VecDeque<Result<GeneratedCaseDraft, ProviderError>>>,
+}
+
+impl MockCaseGenerationProvider {
+    pub fn new(responses: Vec<Result<GeneratedCaseDraft, ProviderError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into()),
+        }
+    }
+
+    fn next(&self) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError> {
+        let response = self
+            .responses
+            .lock()
+            .map_err(|_| ProviderError::Unknown("mock response lock poisoned".into()))?
+            .pop_front()
+            .ok_or_else(|| {
+                ProviderError::InvalidResponse("mock response queue exhausted".into())
+            })??;
+        Ok(ProviderResponse {
+            output: response,
+            usage: TokenUsage::default(),
+        })
+    }
+}
+
+#[async_trait]
+impl CaseGenerationProvider for MockCaseGenerationProvider {
+    async fn generate_draft(
+        &self,
+        _request: &GenerationRequest,
+    ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError> {
+        self.next()
+    }
+
+    async fn repair_draft(
+        &self,
+        _request: &GenerationRepairRequest,
+    ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError> {
+        self.next()
+    }
+}
+
+pub struct MockImageGenerationProvider {
+    responses: Mutex<VecDeque<Result<GeneratedImageAsset, ProviderError>>>,
+}
+
+impl MockImageGenerationProvider {
+    pub fn new(responses: Vec<Result<GeneratedImageAsset, ProviderError>>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into()),
+        }
+    }
+}
+
+#[async_trait]
+impl ImageGenerationProvider for MockImageGenerationProvider {
+    async fn generate_image(
+        &self,
+        _request: &ImageGenerationRequest,
+    ) -> Result<GeneratedImageAsset, ProviderError> {
+        self.responses
+            .lock()
+            .map_err(|_| ProviderError::Unknown("mock image response lock poisoned".into()))?
+            .pop_front()
+            .ok_or_else(|| {
+                ProviderError::InvalidResponse("mock image response queue exhausted".into())
+            })?
+    }
 }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/narrastate-core",
+    "crates/narrastate-case",
     "crates/narrastate-runtime",
     "crates/narrastate-provider",
     "crates/narrastate-storage",

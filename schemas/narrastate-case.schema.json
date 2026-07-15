@@ -1,0 +1,921 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CaseDefinition",
+  "type": "object",
+  "required": [
+    "characters",
+    "entities",
+    "evidence",
+    "facts",
+    "id",
+    "initial_player_knowledge",
+    "locale",
+    "required_case_elements",
+    "schema_version",
+    "summary",
+    "title"
+  ],
+  "properties": {
+    "characters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CharacterDefinition"
+      }
+    },
+    "ending": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Ending"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Entity"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EvidenceDefinition"
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Fact"
+      }
+    },
+    "id": {
+      "$ref": "#/definitions/CaseId"
+    },
+    "initial_player_knowledge": {
+      "$ref": "#/definitions/PlayerKnowledge"
+    },
+    "locale": {
+      "type": "string"
+    },
+    "required_case_elements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CaseElement"
+      },
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "Belief": {
+      "type": "object",
+      "required": [
+        "confidence",
+        "proposition",
+        "source"
+      ],
+      "properties": {
+        "confidence": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "proposition": {
+          "$ref": "#/definitions/Proposition"
+        },
+        "source": {
+          "$ref": "#/definitions/BeliefSource"
+        }
+      }
+    },
+    "BeliefSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "DirectKnowledge"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Inference"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Hearsay"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Default"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "CaseElement": {
+      "type": "string",
+      "enum": [
+        "Identity",
+        "Opportunity",
+        "Means",
+        "Action",
+        "Intent",
+        "Concealment"
+      ]
+    },
+    "CaseId": {
+      "description": "Author-provided stable case identifier.",
+      "type": "string"
+    },
+    "CharacterDefinition": {
+      "type": "object",
+      "required": [
+        "claims",
+        "defenses",
+        "disclosure_graph",
+        "goals",
+        "id",
+        "initial_beliefs",
+        "knowledge",
+        "name",
+        "personality",
+        "public_profile",
+        "resilience",
+        "role"
+      ],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ClaimDefinition"
+          }
+        },
+        "defenses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DefenseStrategy"
+          }
+        },
+        "disclosure_graph": {
+          "$ref": "#/definitions/DisclosureGraph"
+        },
+        "goals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CharacterGoal"
+          }
+        },
+        "id": {
+          "$ref": "#/definitions/CharacterId"
+        },
+        "initial_beliefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Belief"
+          }
+        },
+        "knowledge": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FactId"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "personality": {
+          "$ref": "#/definitions/PersonalityProfile"
+        },
+        "public_profile": {
+          "type": "string"
+        },
+        "resilience": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "role": {
+          "type": "string"
+        }
+      }
+    },
+    "CharacterGoal": {
+      "type": "object",
+      "required": [
+        "description",
+        "priority"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        }
+      }
+    },
+    "CharacterId": {
+      "description": "Author-provided stable character identifier.",
+      "type": "string"
+    },
+    "ClaimDefinition": {
+      "type": "object",
+      "required": [
+        "available_from",
+        "id",
+        "invalidated_by",
+        "kind",
+        "owner",
+        "proposition"
+      ],
+      "properties": {
+        "available_from": {
+          "$ref": "#/definitions/InterrogationPhase"
+        },
+        "fallback_claim": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ClaimId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/definitions/ClaimId"
+        },
+        "invalidated_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EvidenceId"
+          }
+        },
+        "kind": {
+          "$ref": "#/definitions/ClaimKind"
+        },
+        "owner": {
+          "$ref": "#/definitions/CharacterId"
+        },
+        "proposition": {
+          "$ref": "#/definitions/Proposition"
+        }
+      }
+    },
+    "ClaimId": {
+      "description": "Author-provided stable claim identifier.",
+      "type": "string"
+    },
+    "ClaimKind": {
+      "type": "string",
+      "enum": [
+        "Truth",
+        "Lie",
+        "HalfTruth",
+        "Opinion",
+        "Deflection"
+      ]
+    },
+    "DefenseStrategy": {
+      "type": "object",
+      "required": [
+        "applicable_claims",
+        "id",
+        "kind",
+        "max_uses",
+        "usable_phases"
+      ],
+      "properties": {
+        "applicable_claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ClaimId"
+          }
+        },
+        "fallback_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DefenseStrategyId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/definitions/DefenseStrategyId"
+        },
+        "kind": {
+          "$ref": "#/definitions/DefenseStrategyKind"
+        },
+        "max_uses": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "style_prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usable_phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InterrogationPhase"
+          }
+        }
+      }
+    },
+    "DefenseStrategyId": {
+      "description": "Author-provided stable defense strategy identifier.",
+      "type": "string"
+    },
+    "DefenseStrategyKind": {
+      "type": "string",
+      "enum": [
+        "Denial",
+        "MemoryGap",
+        "InnocentExplanation",
+        "EvidenceChallenge",
+        "MinimizeResponsibility",
+        "ShiftBlame",
+        "EmotionalAppeal",
+        "Silence"
+      ]
+    },
+    "DialogueAct": {
+      "type": "string",
+      "enum": [
+        "Answer",
+        "Deny",
+        "Evade",
+        "Reframe",
+        "ChallengeEvidence",
+        "ShiftBlame",
+        "PartialAdmission",
+        "FullAdmission",
+        "AskForClarification",
+        "Silence"
+      ]
+    },
+    "DisclosureGraph": {
+      "type": "object",
+      "required": [
+        "nodes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DisclosureNode"
+          }
+        }
+      }
+    },
+    "DisclosureId": {
+      "description": "Author-provided stable disclosure node identifier.",
+      "type": "string"
+    },
+    "DisclosureKind": {
+      "type": "string",
+      "enum": [
+        "PeripheralSecret",
+        "Presence",
+        "Access",
+        "Means",
+        "PartialAction",
+        "FullAction",
+        "Intent",
+        "Confession"
+      ]
+    },
+    "DisclosureNode": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "min_phase",
+        "prerequisites",
+        "response_intent",
+        "reveals"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/DisclosureId"
+        },
+        "kind": {
+          "$ref": "#/definitions/DisclosureKind"
+        },
+        "min_phase": {
+          "$ref": "#/definitions/InterrogationPhase"
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DisclosurePrerequisite"
+          }
+        },
+        "response_intent": {
+          "$ref": "#/definitions/DialogueAct"
+        },
+        "reveals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FactId"
+          }
+        }
+      }
+    },
+    "DisclosurePrerequisite": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "disclosure"
+          ],
+          "properties": {
+            "disclosure": {
+              "$ref": "#/definitions/DisclosureId"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "evidence"
+          ],
+          "properties": {
+            "evidence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/EvidenceId"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "min_phase"
+          ],
+          "properties": {
+            "min_phase": {
+              "$ref": "#/definitions/InterrogationPhase"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "claim"
+          ],
+          "properties": {
+            "claim": {
+              "$ref": "#/definitions/ClaimId"
+            }
+          }
+        }
+      ]
+    },
+    "DiscoveryRule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "StartingEvidence"
+              ]
+            }
+          }
+        },
+        {
+          "type": [
+            "object",
+            "string"
+          ],
+          "enum": [
+            "Calm",
+            "Guarded",
+            "Defensive",
+            "Pressured",
+            "Cornered",
+            "ConfessionEligible",
+            "Resolved"
+          ],
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "AutomaticAtPhase"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Author-provided stable evidence identifier.",
+          "type": [
+            "object",
+            "string"
+          ],
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "AfterEvidencePresented"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Ending": {
+      "type": "object",
+      "required": [
+        "epilogue"
+      ],
+      "properties": {
+        "epilogue": {
+          "type": "string"
+        }
+      }
+    },
+    "Entity": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "EntityRef": {
+      "description": "Reference to a named entity within the case world.",
+      "type": "string"
+    },
+    "EvidenceDefinition": {
+      "type": "object",
+      "required": [
+        "contradicts",
+        "description",
+        "directness",
+        "discoverable_by",
+        "elements",
+        "exclusivity",
+        "id",
+        "reliability",
+        "supports",
+        "title"
+      ],
+      "properties": {
+        "contradicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ClaimId"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "directness": {
+          "type": "number",
+          "format": "float"
+        },
+        "discoverable_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DiscoveryRule"
+          }
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CaseElement"
+          },
+          "uniqueItems": true
+        },
+        "exclusivity": {
+          "type": "number",
+          "format": "float"
+        },
+        "id": {
+          "$ref": "#/definitions/EvidenceId"
+        },
+        "reliability": {
+          "type": "number",
+          "format": "float"
+        },
+        "supports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PropositionRef"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "EvidenceId": {
+      "description": "Author-provided stable evidence identifier.",
+      "type": "string"
+    },
+    "Fact": {
+      "type": "object",
+      "required": [
+        "id",
+        "object",
+        "predicate",
+        "subject",
+        "tags",
+        "truth",
+        "visibility"
+      ],
+      "properties": {
+        "display_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StoryTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/definitions/FactId"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EntityRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "object": {
+          "$ref": "#/definitions/FactValue"
+        },
+        "predicate": {
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/definitions/EntityRef"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "truth": {
+          "$ref": "#/definitions/TruthValue"
+        },
+        "visibility": {
+          "$ref": "#/definitions/FactVisibility"
+        }
+      }
+    },
+    "FactId": {
+      "description": "Author-provided stable fact identifier.",
+      "type": "string"
+    },
+    "FactValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/EntityRef"
+        }
+      ]
+    },
+    "FactVisibility": {
+      "type": "string",
+      "enum": [
+        "PublicAtStart",
+        "Discoverable",
+        "Hidden"
+      ]
+    },
+    "InterrogationPhase": {
+      "type": "string",
+      "enum": [
+        "Calm",
+        "Guarded",
+        "Defensive",
+        "Pressured",
+        "Cornered",
+        "ConfessionEligible",
+        "Resolved"
+      ]
+    },
+    "PersonalityProfile": {
+      "type": "object",
+      "required": [
+        "traits"
+      ],
+      "properties": {
+        "speech_style": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "traits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PlayerKnowledge": {
+      "type": "object",
+      "required": [
+        "evidence_ids",
+        "fact_ids"
+      ],
+      "properties": {
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EvidenceId"
+          }
+        },
+        "fact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FactId"
+          }
+        }
+      }
+    },
+    "Proposition": {
+      "type": "object",
+      "required": [
+        "object",
+        "predicate",
+        "subject"
+      ],
+      "properties": {
+        "object": {
+          "$ref": "#/definitions/FactValue"
+        },
+        "predicate": {
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/definitions/EntityRef"
+        }
+      }
+    },
+    "PropositionRef": {
+      "description": "Reference to a proposition by ID.",
+      "type": "string"
+    },
+    "StoryTime": {
+      "type": "object",
+      "properties": {
+        "day": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "hour": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "minute": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "month": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      }
+    },
+    "TruthValue": {
+      "type": "string",
+      "enum": [
+        "True",
+        "False",
+        "Uncertain"
+      ]
+    }
+  }
+}

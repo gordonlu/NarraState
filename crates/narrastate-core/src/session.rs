@@ -1,8 +1,8 @@
 use crate::character::CharacterRuntimeState;
 use crate::disclosure::DialogueAct;
 use crate::id::{
-    CaseId, CharacterId, ClaimId, ClientActionId, DisclosureId, EvidenceId, FactId, SessionId,
-    TurnId,
+    CaseId, CaseInstanceId, CharacterId, ClaimId, ClientActionId, DisclosureId, EvidenceId, FactId,
+    SessionId, TurnId,
 };
 use crate::transition::{InterpretedAction, TransitionReason};
 use schemars::JsonSchema;
@@ -14,6 +14,8 @@ use uuid::Uuid;
 pub struct SessionState {
     pub session_id: SessionId,
     pub case_id: CaseId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<CaseInstanceId>,
     #[serde(default)]
     pub mode: SessionMode,
     pub status: SessionStatus,

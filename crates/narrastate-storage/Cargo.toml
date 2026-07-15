@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 narrastate-core = { path = "../narrastate-core" }
+narrastate-case = { path = "../narrastate-case" }
 narrastate-runtime = { path = "../narrastate-runtime" }
 serde.workspace = true
 serde_json.workspace = true

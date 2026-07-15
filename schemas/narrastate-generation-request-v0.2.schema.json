@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GenerationRequest",
+  "type": "object",
+  "required": [
+    "character_count",
+    "confession_policy",
+    "difficulty",
+    "language",
+    "realism",
+    "setting",
+    "target_duration_minutes",
+    "theme",
+    "tone",
+    "variant_count"
+  ],
+  "properties": {
+    "character_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "confession_policy": {
+      "$ref": "#/definitions/ConfessionPolicy"
+    },
+    "content_constraints": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "difficulty": {
+      "$ref": "#/definitions/Difficulty"
+    },
+    "language": {
+      "type": "string"
+    },
+    "realism": {
+      "$ref": "#/definitions/RealismLevel"
+    },
+    "setting": {
+      "type": "string"
+    },
+    "target_duration_minutes": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "theme": {
+      "type": "string"
+    },
+    "tone": {
+      "$ref": "#/definitions/NarrativeTone"
+    },
+    "variant_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ConfessionPolicy": {
+      "type": "string",
+      "enum": [
+        "never_required",
+        "partial_then_full",
+        "evidence_only_allowed"
+      ]
+    },
+    "Difficulty": {
+      "type": "string",
+      "enum": [
+        "easy",
+        "medium",
+        "hard"
+      ]
+    },
+    "NarrativeTone": {
+      "type": "string",
+      "enum": [
+        "realistic",
+        "noir",
+        "suspenseful",
+        "light"
+      ]
+    },
+    "RealismLevel": {
+      "type": "string",
+      "enum": [
+        "grounded",
+        "dramatic"
+      ]
+    }
+  }
+}

@@ -2,8 +2,11 @@ import type {
   AccusationResult,
   CaseDetail,
   CaseSummary,
+  CreateGameResponse,
   ConclusionReport,
   DebugSession,
+  GenerationJob,
+  GenerationRequest,
   ProblemDetails,
   PublicConfig,
   PublicEvent,
@@ -54,13 +57,26 @@ async function responseError(response: Response): Promise<ApiError> {
 export const api = {
   health: () => request<{ status: string; version: string }>('/api/v1/health'),
   config: () => request<PublicConfig>('/api/v1/config/public'),
-  testProvider: (payload: { base_url: string; model: string; api_key?: string }) =>
+  saveProvider: (payload: { base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) =>
+    request<{ ok: boolean }>('/api/v1/config/provider', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  saveImageProvider: (payload: { enabled: boolean; base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) =>
+    request<{ ok: boolean }>('/api/v1/config/image-provider', { method: 'POST', body: JSON.stringify(payload) }),
+  testProvider: (payload: { base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) =>
     request<{ ok: boolean }>('/api/v1/config/test-provider', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  generateCase: (payload: GenerationRequest) => request<GenerationJob>('/api/v1/case-generation/jobs', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  generationJob: (jobId: string) => request<GenerationJob>(`/api/v1/case-generation/jobs/${encodeURIComponent(jobId)}`),
   cases: () => request<CaseSummary[]>('/api/v1/cases'),
   case: (caseId: string) => request<CaseDetail>(`/api/v1/cases/${encodeURIComponent(caseId)}`),
+  createGame: (payload: { case_id: string; variant_selection: { mode: 'default' | 'random' } | { mode: 'specific'; variant_id: string }; seed?: number; mode: SessionMode }) =>
+    request<CreateGameResponse>('/api/v1/games', { method: 'POST', body: JSON.stringify(payload) }),
   createSession: (caseId: string, mode: SessionMode, targetCharacterId?: string) =>
     request<PublicSession>('/api/v1/sessions', {
       method: 'POST',

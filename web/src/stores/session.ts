@@ -217,8 +217,18 @@ export const useSessionStore = defineStore('session', () => {
     return session.value
   }
 
-  async function testProvider(payload: { base_url: string; model: string; api_key?: string }) {
+  async function testProvider(payload: { base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) {
     await api.testProvider(payload)
+    config.value = await api.config()
+  }
+
+  async function saveProvider(payload: { base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) {
+    await api.saveProvider(payload)
+    config.value = await api.config()
+  }
+
+  async function saveImageProvider(payload: { enabled: boolean; base_url: string; model: string; api_key?: string; persist_api_key?: boolean }) {
+    await api.saveImageProvider(payload)
     config.value = await api.config()
   }
 
@@ -272,6 +282,8 @@ export const useSessionStore = defineStore('session', () => {
     loadDebug,
     restartCurrent,
     testProvider,
+    saveProvider,
+    saveImageProvider,
     clearNotice,
   }
 })

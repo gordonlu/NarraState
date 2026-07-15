@@ -12,6 +12,10 @@ pub enum ValidationError {
     DisallowedFact { fact: FactId },
     ForbiddenFactReferenced { fact: FactId },
     FullAdmissionNotAllowed,
+    ModelIdentityLeak,
+    ConfessionalToneNotAllowed,
+    MissingRequiredFact { fact: FactId },
+    InvalidTone,
     EmptyUtterance,
 }
 
@@ -23,6 +27,14 @@ impl std::fmt::Display for ValidationError {
             Self::DisallowedFact { fact } => write!(f, "Fact {fact} is not in the allowed set"),
             Self::ForbiddenFactReferenced { fact } => write!(f, "Fact {fact} is forbidden"),
             Self::FullAdmissionNotAllowed => write!(f, "Full admission not allowed by plan"),
+            Self::ModelIdentityLeak => write!(f, "Utterance leaked model or system identity"),
+            Self::ConfessionalToneNotAllowed => {
+                write!(f, "Confessional tone is not allowed by the dialogue plan")
+            }
+            Self::MissingRequiredFact { fact } => {
+                write!(f, "Newly revealed fact {fact} was not acknowledged")
+            }
+            Self::InvalidTone => write!(f, "Renderer returned an unsupported tone"),
             Self::EmptyUtterance => write!(f, "Utterance is empty"),
         }
     }
@@ -62,13 +74,35 @@ impl OutputValidator {
             }
         }
 
-        let is_full_admission = output.utterance.contains("认罪")
-            || output.utterance.contains("是我干的")
-            || output.utterance.contains("I confess")
-            || output.utterance.contains("I did it");
+        if contains_model_identity(&output.utterance) {
+            errors.push(ValidationError::ModelIdentityLeak);
+        }
+
+        if !VALID_TONES.contains(&output.tone.as_str()) {
+            errors.push(ValidationError::InvalidTone);
+        }
+        if output.tone == "confessional"
+            && !matches!(plan.act, narrastate_core::DialogueAct::FullAdmission)
+        {
+            errors.push(ValidationError::ConfessionalToneNotAllowed);
+        }
+
+        let is_full_admission = contains_unnegated_admission(&output.utterance);
 
         if is_full_admission && !matches!(plan.act, narrastate_core::DialogueAct::FullAdmission) {
             errors.push(ValidationError::FullAdmissionNotAllowed);
+        }
+
+        if matches!(
+            plan.act,
+            narrastate_core::DialogueAct::PartialAdmission
+                | narrastate_core::DialogueAct::FullAdmission
+        ) {
+            for fact in &plan.newly_revealed_facts {
+                if !output.acknowledged_fact_ids.contains(fact) {
+                    errors.push(ValidationError::MissingRequiredFact { fact: fact.clone() });
+                }
+            }
         }
 
         if errors.is_empty() {
@@ -106,6 +140,64 @@ impl OutputValidator {
             tone: "neutral".into(),
         }
     }
+}
+
+const VALID_TONES: &[&str] = &[
+    "neutral",
+    "defensive",
+    "agitated",
+    "controlled_defensive",
+    "evasive",
+    "resigned",
+    "confessional",
+    "angry",
+    "calm",
+];
+
+fn contains_model_identity(text: &str) -> bool {
+    let normalized = text.to_lowercase().replace(char::is_whitespace, "");
+    [
+        "作为ai",
+        "我是ai",
+        "语言模型",
+        "系统提示",
+        "systemprompt",
+        "chatgpt",
+        "openai",
+        "asanai",
+        "iamanai",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase))
+}
+
+fn contains_unnegated_admission(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    [
+        "我认罪",
+        "是我干的",
+        "是我做的",
+        "是我偷的",
+        "我偷了",
+        "我拿走了",
+        "我拿走的",
+        "我安排的",
+        "我策划的",
+        "i confess",
+        "i did it",
+        "i stole",
+    ]
+    .iter()
+    .any(|phrase| contains_unnegated(&normalized, phrase))
+}
+
+fn contains_unnegated(text: &str, phrase: &str) -> bool {
+    text.match_indices(phrase).any(|(index, _)| {
+        let prefix = &text[..index];
+        !["不", "没", "并非", "不是", "never", "didn't", "did not"]
+            .iter()
+            .any(|negation| prefix.trim_end().ends_with(negation))
+    })
 }
 
 impl Default for OutputValidator {

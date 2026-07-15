@@ -1,0 +1,20 @@
+services:
+  narrastate:
+    build:
+      context: .
+    ports:
+      - "${NARRASTATE_PORT:-3000}:3000"
+    environment:
+      NARRASTATE_HOST: 0.0.0.0
+      NARRASTATE_PORT: 3000
+      DATABASE_URL: /app/data/narrastate.db
+      NARRASTATE_BASE_URL: ${NARRASTATE_BASE_URL:-https://api.openai.com/v1}
+      NARRASTATE_MODEL: ${NARRASTATE_MODEL:-gpt-4o-mini}
+      NARRASTATE_API_KEY: ${NARRASTATE_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - narrastate-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  narrastate-data:

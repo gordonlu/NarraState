@@ -68,6 +68,45 @@ pub const MIGRATIONS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_narrative_events_session ON narrative_events(session_id, sequence)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_case ON sessions(case_id)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_session ON session_snapshots(session_id, revision DESC)",
+    "CREATE TABLE installed_cases (
+        case_id TEXT NOT NULL,
+        case_version TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        template_content_hash TEXT NOT NULL,
+        installed_at TEXT NOT NULL,
+        PRIMARY KEY (case_id, case_version)
+    )",
+    "CREATE TABLE case_instances (
+        instance_id TEXT PRIMARY KEY,
+        case_id TEXT NOT NULL,
+        case_version TEXT NOT NULL,
+        variant_id TEXT NOT NULL,
+        selector_version TEXT NOT NULL,
+        seed_text TEXT NOT NULL,
+        compiled_content_hash TEXT NOT NULL,
+        instance_hash TEXT NOT NULL,
+        compiled_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    "ALTER TABLE sessions ADD COLUMN instance_id TEXT REFERENCES case_instances(instance_id)",
+    "CREATE INDEX idx_sessions_instance ON sessions(instance_id)",
+    "CREATE TABLE case_generation_jobs (
+        job_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        drafts_json TEXT NOT NULL,
+        status_events_json TEXT NOT NULL,
+        validation_report_json TEXT,
+        result_path TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+        repair_count INTEGER NOT NULL DEFAULT 0 CHECK(repair_count >= 0),
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    "CREATE INDEX idx_case_generation_jobs_status ON case_generation_jobs(status, updated_at)",
 ];
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), super::StorageError> {
@@ -75,8 +114,23 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), super::StorageError
         .acquire()
         .await
         .map_err(|error| super::StorageError::Database(format!("acquire: {error}")))?;
+    connection
+        .execute(MIGRATIONS[0])
+        .await
+        .map_err(|error| super::StorageError::Migration(format!("bootstrap: {error}")))?;
     for (index, sql) in MIGRATIONS.iter().enumerate() {
         let version = (index + 1) as i64;
+        let applied: Option<i64> =
+            sqlx::query_scalar("SELECT version FROM _migrations WHERE version = ?")
+                .bind(version)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(|error| {
+                    super::StorageError::Migration(format!("check V{version}: {error}"))
+                })?;
+        if applied.is_some() {
+            continue;
+        }
         connection
             .execute(*sql)
             .await

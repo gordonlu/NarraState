@@ -33,6 +33,7 @@ export interface CharacterSummary {
   name: string
   role: string
   public_profile: string
+  portrait_url?: string
 }
 
 export interface Evidence {
@@ -48,12 +49,30 @@ export interface CaseSummary {
   locale: string
   character_count: number
   evidence_count: number
+  cover_url?: string
 }
 
 export interface CaseDetail extends CaseSummary {
   facts: Fact[]
   evidence: Evidence[]
   characters: CharacterSummary[]
+  visual_assets: VisualAsset[]
+}
+
+export type GeneratedVisualType =
+  | 'case_cover'
+  | 'chapter_illustration'
+  | 'scene_background'
+  | 'location_atmosphere'
+  | 'character_portrait'
+  | 'transition_illustration'
+  | 'ending_illustration'
+
+export interface VisualAsset {
+  id: string
+  visual_type: GeneratedVisualType
+  url: string
+  alt_text: string
 }
 
 export type DialogueSpeaker = 'Player' | 'System' | { Character: string }
@@ -89,10 +108,25 @@ export interface PublicSession {
 
 export interface PublicConfig {
   configured: boolean
+  key_persisted: boolean
   base_url: string
   model: string
   api_key: string
+  image_provider: { enabled: boolean; configured: boolean; key_persisted: boolean; base_url: string; model: string }
 }
+
+export interface GenerationRequest {
+  theme: string; setting: string; tone: string; target_duration_minutes: number
+  difficulty: string; character_count: number; variant_count: number; realism: string
+  confession_policy: string; content_constraints: string[]; language: string
+}
+
+export interface GenerationJob {
+  job_id: string; status: string; attempt_count: number; repair_count: number
+  error_code?: string; error_message?: string; result_path?: string
+  events: Array<{ sequence: number; to: string; error_code?: string }>; updated_at: string
+}
+export interface CreateGameResponse { session_id: string; instance_id: string; case_id: string; case_version: string; seed: number }
 
 export interface ProblemDetails {
   type?: string

@@ -1,0 +1,20 @@
+[package]
+name = "narrastate-case"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+narrastate-core = { path = "../narrastate-core" }
+narrastate-runtime = { path = "../narrastate-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
