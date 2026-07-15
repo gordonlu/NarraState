@@ -1,7 +1,5 @@
 # NarraState Phase 6 UI system
 
-Reference: `phase6-investigation-concept.png` (1536 × 1024).
-
 ## Product direction
 
 The stable NarraState shell is genre-neutral. Cases may replace the accent color,
@@ -19,7 +17,7 @@ paper, or evidence-board decoration.
 - Spacing: 4, 8, 12, 16, 24, 32, 40px.
 - Chrome type: Microsoft YaHei, PingFang SC, system sans-serif.
 - Wordmark: Inter/Segoe UI/system sans-serif, 600, tracked.
-- Motion: 140ms control feedback, 220ms panel movement; reduced-motion safe.
+- Motion: 160ms micro feedback, 420ms interface/Flip changes, 800ms narrative turns; reduced-motion safe.
 
 ## Container model
 

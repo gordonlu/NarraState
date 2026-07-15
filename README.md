@@ -4,8 +4,6 @@ NarraState 是一个状态驱动的 AI 互动叙事运行时。Rust 决定事实
 
 v0.1 提供一个可完整通关的中文侦探审讯 Demo、OpenAI-compatible 模型接入、本地 SQLite 持久化、REST/SSE API，以及 Vue 3 调查工作台。没有模型配置时可直接使用 Mock 模式体验完整状态机。
 
-![NarraState 调查工作台](web/design/phase6-investigation-concept.png)
-
 ## 快速开始
 
 需要 Docker Desktop 或 Docker Engine + Compose：

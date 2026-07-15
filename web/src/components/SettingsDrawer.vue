@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
+import { animateOverlayEnter, animateOverlayLeave } from '../lib/overlayMotion'
 import { useSessionStore } from '../stores/session'
 import AppIcon from './AppIcon.vue'
 
@@ -83,7 +84,7 @@ async function saveImageConfig() {
 
 <template>
   <Teleport to="body">
-    <Transition name="drawer">
+    <Transition :css="false" @enter="animateOverlayEnter" @leave="animateOverlayLeave">
       <div v-if="open" class="drawer-layer" @mousedown.self="$emit('close')">
         <aside class="settings-drawer" aria-labelledby="settings-title">
           <header>

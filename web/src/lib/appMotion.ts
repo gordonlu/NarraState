@@ -1,20 +1,11 @@
 import { gsap } from 'gsap'
 import { Draggable } from 'gsap/Draggable'
 import { Flip } from 'gsap/Flip'
+import { appMotion, prefersReducedMotion } from './motionCore'
 
 gsap.registerPlugin(Flip, Draggable)
 
-export const appMotion = {
-  micro: 0.16,
-  interface: 0.42,
-  narrative: 0.8,
-  ease: 'power2.out',
-  decisiveEase: 'power3.inOut',
-} as const
-
-export function prefersReducedMotion() {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
+export { appMotion, prefersReducedMotion }
 
 export function createBriefEntrance(root: HTMLElement) {
   if (prefersReducedMotion()) return undefined
@@ -54,6 +45,59 @@ export function createInvestigationEntrance(root: HTMLElement) {
   return gsap.timeline({ defaults: { ease: appMotion.ease } })
     .from(panels, { autoAlpha: 0, y: 18, stagger: 0.08, duration: appMotion.narrative })
     .from(dialogueParts, { autoAlpha: 0, y: 12, stagger: 0.06, duration: appMotion.interface }, '-=.5')
+}
+
+export async function animateLayoutChange(
+  panel: HTMLElement,
+  update: () => Promise<void> | void,
+  revealSelector: string,
+) {
+  if (prefersReducedMotion()) {
+    await update()
+    return
+  }
+
+  const state = Flip.getState(panel)
+  await update()
+  Flip.from(state, { targets: panel, duration: appMotion.interface, ease: appMotion.decisiveEase })
+  gsap.fromTo(
+    panel.querySelectorAll(revealSelector),
+    { autoAlpha: 0, y: 12 },
+    { autoAlpha: 1, y: 0, stagger: 0.05, duration: appMotion.interface, ease: appMotion.ease, clearProps: 'opacity,visibility,transform' },
+  )
+}
+
+export async function animateSharedElementFlip(
+  source: HTMLElement,
+  update: () => Promise<void> | void,
+  resolveTarget: () => HTMLElement | null,
+) {
+  if (prefersReducedMotion()) {
+    await update()
+    return
+  }
+
+  const state = Flip.getState(source)
+  await update()
+  const target = resolveTarget()
+  if (!target) return
+
+  Flip.from(state, {
+    targets: target,
+    absolute: true,
+    nested: true,
+    duration: appMotion.interface,
+    ease: appMotion.decisiveEase,
+    clearProps: true,
+  })
+  const details = target.querySelectorAll('[data-detail-reveal]')
+  if (details.length > 0) {
+    gsap.fromTo(
+      details,
+      { autoAlpha: 0, y: 10 },
+      { autoAlpha: 1, y: 0, stagger: 0.05, duration: appMotion.interface, ease: appMotion.ease, clearProps: 'opacity,visibility,transform' },
+    )
+  }
 }
 
 export function animateNewTurns(turns: HTMLElement[]) {

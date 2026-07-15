@@ -11,6 +11,7 @@ import {
   animateCharacterSwap,
   animateEvidenceFlip,
   animateNewTurns,
+  animateSharedElementFlip,
   createEvidenceDragController,
   createInvestigationEntrance,
   type EvidenceDragController,
@@ -33,6 +34,9 @@ const accusationOpen = ref(false)
 const developerOpen = ref(false)
 const transcript = ref<HTMLElement>()
 const inference = ref('')
+const evidenceQuery = ref('')
+const focusedEvidenceId = ref<string>()
+const focusedCharacterId = ref<string>()
 const investigationGrid = ref<HTMLElement>()
 const dialoguePanel = ref<HTMLElement>()
 let entrance: ReturnType<typeof createInvestigationEntrance>
@@ -48,6 +52,19 @@ const timeline = computed(() =>
     formatStoryTime(b.happened_at).localeCompare(formatStoryTime(a.happened_at)),
   ),
 )
+const focusedEvidence = computed(() =>
+  store.session?.discovered_evidence.find((item) => item.id === focusedEvidenceId.value),
+)
+const focusedCharacter = computed(() =>
+  store.activeCase?.characters.find((character) => character.id === focusedCharacterId.value),
+)
+const filteredEvidence = computed(() => {
+  const query = evidenceQuery.value.trim().toLocaleLowerCase()
+  if (!query) return store.session?.discovered_evidence ?? []
+  return (store.session?.discovered_evidence ?? []).filter((item) =>
+    `${item.title} ${item.description}`.toLocaleLowerCase().includes(query),
+  )
+})
 
 onMounted(async () => {
   try {
@@ -129,6 +146,76 @@ async function selectCharacter(characterId: string) {
   })
 }
 
+async function openCharacterDetail(characterId: string) {
+  const root = investigationGrid.value
+  const source = root?.querySelector<HTMLElement>(`[data-character-source="${CSS.escape(characterId)}"]`)
+  if (!root || !source) {
+    focusedCharacterId.value = characterId
+    return
+  }
+  await animateSharedElementFlip(source, async () => {
+    focusedCharacterId.value = characterId
+    await nextTick()
+  }, () => root.querySelector<HTMLElement>(`[data-character-detail="${CSS.escape(characterId)}"]`))
+}
+
+async function closeCharacterDetail() {
+  const characterId = focusedCharacterId.value
+  const root = investigationGrid.value
+  const source = characterId ? root?.querySelector<HTMLElement>(`[data-character-detail="${CSS.escape(characterId)}"]`) : undefined
+  if (!characterId || !root || !source) {
+    focusedCharacterId.value = undefined
+    return
+  }
+  await animateSharedElementFlip(source, async () => {
+    focusedCharacterId.value = undefined
+    await nextTick()
+  }, () => root.querySelector<HTMLElement>(`[data-character-source="${CSS.escape(characterId)}"]`))
+}
+
+async function talkToFocusedCharacter() {
+  const characterId = focusedCharacterId.value
+  if (!characterId) return
+  await closeCharacterDetail()
+  await selectCharacter(characterId)
+}
+
+async function openEvidenceDetail(evidenceId: string) {
+  const root = investigationGrid.value
+  const source = root?.querySelector<HTMLElement>(`[data-evidence-source="${CSS.escape(evidenceId)}"]`)
+  if (!root || !source) {
+    focusedEvidenceId.value = evidenceId
+    return
+  }
+  evidenceDrag?.destroy()
+  await animateSharedElementFlip(source, async () => {
+    focusedEvidenceId.value = evidenceId
+    await nextTick()
+  }, () => root.querySelector<HTMLElement>(`[data-evidence-detail="${CSS.escape(evidenceId)}"]`))
+}
+
+async function closeEvidenceDetail() {
+  const evidenceId = focusedEvidenceId.value
+  const root = investigationGrid.value
+  const source = evidenceId ? root?.querySelector<HTMLElement>(`[data-evidence-detail="${CSS.escape(evidenceId)}"]`) : undefined
+  if (!evidenceId || !root || !source) {
+    focusedEvidenceId.value = undefined
+    evidenceDrag?.refresh()
+    return
+  }
+  await animateSharedElementFlip(source, async () => {
+    focusedEvidenceId.value = undefined
+    await nextTick()
+  }, () => root.querySelector<HTMLElement>(`[data-evidence-source="${CSS.escape(evidenceId)}"]`))
+  evidenceDrag?.refresh()
+}
+
+function selectResearchTab(tab: ResearchTab) {
+  focusedEvidenceId.value = undefined
+  researchTab.value = tab
+  void nextTick(() => evidenceDrag?.refresh())
+}
+
 async function toggleEvidenceWithMotion(evidenceId: string) {
   const root = investigationGrid.value
   if (!root) {
@@ -176,17 +263,25 @@ function onComposerKeydown(event: KeyboardEvent) {
       <aside class="people-panel workspace-people">
         <section>
           <h2><AppIcon name="people" />相关人物</h2>
-          <button
-            v-for="character in store.activeCase.characters"
-            :key="character.id"
-            class="person-row"
-            :class="{ selected: store.activeCharacterId === character.id }"
-            type="button"
-            @click="selectCharacter(character.id)"
-          >
-            <span class="person-mark">{{ character.name.slice(0, 1) }}</span>
-            <span><strong>{{ character.name }}</strong><small>{{ character.role }}</small></span>
-          </button>
+          <article v-if="focusedCharacter" class="character-detail-view" :data-character-detail="focusedCharacter.id" :data-flip-id="`character-${focusedCharacter.id}`">
+            <button class="detail-back" type="button" @click="closeCharacterDetail"><AppIcon name="arrow-left" :size="17" />返回人物</button>
+            <div class="character-detail-identity" data-detail-reveal>
+              <div class="character-detail-mark"><img v-if="focusedCharacter.portrait_url" :src="focusedCharacter.portrait_url" alt="" /><template v-else>{{ focusedCharacter.name.slice(0, 1) }}</template></div>
+              <div><h3>{{ focusedCharacter.name }}</h3><span>{{ focusedCharacter.role }}</span></div>
+            </div>
+            <p data-detail-reveal>{{ focusedCharacter.public_profile }}</p>
+            <small data-detail-reveal>公开人物档案，不包含隐藏事实或内部状态。</small>
+            <button class="secondary-button character-talk-button" type="button" data-detail-reveal @click="talkToFocusedCharacter">与{{ focusedCharacter.name }}交谈<AppIcon name="arrow-right" :size="16" /></button>
+          </article>
+          <div v-else class="people-list">
+            <div v-for="character in store.activeCase.characters" :key="character.id" class="person-row-wrap" :class="{ selected: store.activeCharacterId === character.id }" :data-character-source="character.id" :data-flip-id="`character-${character.id}`">
+              <button class="person-row" type="button" @click="selectCharacter(character.id)">
+                <span class="person-mark">{{ character.name.slice(0, 1) }}</span>
+                <span><strong>{{ character.name }}</strong><small>{{ character.role }}</small></span>
+              </button>
+              <button class="person-detail-button" type="button" :aria-label="`查看 ${character.name} 的公开档案`" @click="openCharacterDetail(character.id)"><AppIcon name="chevron-right" :size="18" /></button>
+            </div>
+          </div>
         </section>
         <section class="timeline-section">
           <h2><AppIcon name="timeline" />事件线</h2>
@@ -218,7 +313,7 @@ function onComposerKeydown(event: KeyboardEvent) {
           </article>
         </div>
         <div class="composer-region" data-evidence-dropzone>
-          <div class="attachment-summary"><span><AppIcon name="paperclip" :size="18" />已附加 {{ store.selectedEvidence.length }} 条线索<small>也可拖入此处</small></span><button type="button" @click="mobileTab = 'research'; researchTab = 'evidence'">选择线索</button></div>
+          <div class="attachment-summary"><span><AppIcon name="paperclip" :size="18" />已附加 {{ store.selectedEvidence.length }} 条线索<small>也可拖入此处</small></span><button type="button" @click="mobileTab = 'research'; selectResearchTab('evidence')">选择线索</button></div>
           <div v-if="store.selectedEvidence.length" class="attachment-list">
             <div v-for="item in store.selectedEvidence" :key="item.id" class="attachment-row" :data-evidence-attachment="item.id"><AppIcon name="document" /><span>{{ item.title }}</span><button type="button" :aria-label="`移除 ${item.title}`" @click="toggleEvidenceWithMotion(item.id)"><AppIcon name="close" :size="18" /></button></div>
           </div>
@@ -231,18 +326,34 @@ function onComposerKeydown(event: KeyboardEvent) {
 
       <aside class="research-panel workspace-research">
         <nav class="research-tabs" aria-label="调查记录">
-          <button type="button" :class="{ selected: researchTab === 'evidence' }" @click="researchTab = 'evidence'">线索</button>
-          <button type="button" :class="{ selected: researchTab === 'statements' }" @click="researchTab = 'statements'">陈述</button>
-          <button type="button" :class="{ selected: researchTab === 'inferences' }" @click="researchTab = 'inferences'">推断</button>
+          <button type="button" :class="{ selected: researchTab === 'evidence' }" @click="selectResearchTab('evidence')">线索</button>
+          <button type="button" :class="{ selected: researchTab === 'statements' }" @click="selectResearchTab('statements')">陈述</button>
+          <button type="button" :class="{ selected: researchTab === 'inferences' }" @click="selectResearchTab('inferences')">推断</button>
         </nav>
         <div v-if="researchTab === 'evidence'" class="research-content evidence-content">
-          <label class="research-search"><AppIcon name="search" :size="18" /><input placeholder="搜索线索" /></label>
-          <label v-for="item in store.session.discovered_evidence" :key="item.id" class="evidence-row" :class="{ attached: store.attachedEvidenceIds.includes(item.id) }" :data-draggable-evidence="item.id" :data-evidence-source="item.id">
-            <input type="checkbox" :checked="store.attachedEvidenceIds.includes(item.id)" @change="toggleEvidenceWithMotion(item.id)" />
-            <AppIcon class="evidence-drag-handle" name="document" :size="23" data-evidence-drag-handle />
-            <span><strong>{{ item.title }}</strong><small>{{ item.description }}</small></span>
-            <AppIcon name="chevron-right" />
-          </label>
+          <article v-if="focusedEvidence" class="evidence-detail-view" :data-evidence-detail="focusedEvidence.id" :data-evidence-source="focusedEvidence.id" :data-flip-id="`evidence-${focusedEvidence.id}`">
+            <button class="detail-back" type="button" @click="closeEvidenceDetail"><AppIcon name="arrow-left" :size="17" />返回线索</button>
+            <div class="evidence-detail-icon" data-detail-reveal><AppIcon name="document" :size="30" /></div>
+            <span class="detail-index" data-detail-reveal>已发现线索</span>
+            <h2 data-detail-reveal>{{ focusedEvidence.title }}</h2>
+            <p data-detail-reveal>{{ focusedEvidence.description }}</p>
+            <small data-detail-reveal>这里仅显示结构化案件记录中的公开内容。</small>
+            <button class="secondary-button evidence-attach-button" type="button" data-detail-reveal @click="toggleEvidenceWithMotion(focusedEvidence.id)">
+              <AppIcon name="paperclip" :size="17" />{{ store.attachedEvidenceIds.includes(focusedEvidence.id) ? '从问题中移除' : '附加到问题' }}
+            </button>
+          </article>
+          <template v-else>
+            <label class="research-search"><AppIcon name="search" :size="18" /><input v-model="evidenceQuery" placeholder="搜索线索" /></label>
+            <div v-if="filteredEvidence.length === 0" class="empty-state compact">没有匹配的线索。</div>
+            <div v-for="item in filteredEvidence" :key="item.id" class="evidence-row" :class="{ attached: store.attachedEvidenceIds.includes(item.id) }" :data-draggable-evidence="item.id" :data-evidence-source="item.id" :data-flip-id="`evidence-${item.id}`">
+              <label class="evidence-select">
+                <input type="checkbox" :checked="store.attachedEvidenceIds.includes(item.id)" @change="toggleEvidenceWithMotion(item.id)" />
+                <AppIcon class="evidence-drag-handle" name="document" :size="23" data-evidence-drag-handle />
+                <span><strong>{{ item.title }}</strong><small>{{ item.description }}</small></span>
+              </label>
+              <button class="evidence-detail-button" type="button" :aria-label="`查看线索 ${item.title}`" @click="openEvidenceDetail(item.id)"><AppIcon name="chevron-right" :size="18" /></button>
+            </div>
+          </template>
         </div>
         <div v-else-if="researchTab === 'statements'" class="research-content">
           <div v-if="statements.length === 0" class="empty-state">角色陈述会随调查记录在这里。</div>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { animateLayoutChange } from '../lib/appMotion'
+import { animateOverlayEnter, animateOverlayLeave, animateResolutionExit } from '../lib/overlayMotion'
 import { resultLabel } from '../lib/present'
 import { useSessionStore } from '../stores/session'
 import type { AccusationResult } from '../types/api'
@@ -15,6 +17,7 @@ const selected = ref<string[]>([])
 const reasoning = ref('')
 const result = ref<AccusationResult>()
 const submitting = ref(false)
+const dialog = ref<HTMLElement>()
 
 const proven = computed(() =>
   result.value === 'CaseProvenWithoutConfession' || result.value === 'CaseProvenWithConfession',
@@ -41,11 +44,19 @@ async function submit() {
   if (!target.value || !reasoning.value.trim()) return
   submitting.value = true
   try {
-    result.value = await store.submitAccusation({
+    const nextResult = await store.submitAccusation({
       targetCharacterId: target.value,
       evidenceIds: selected.value,
       reasoning: reasoning.value.trim(),
     })
+    if (dialog.value) {
+      await animateLayoutChange(dialog.value, async () => {
+        result.value = nextResult
+        await nextTick()
+      }, '.accusation-result, .result-footer')
+    } else {
+      result.value = nextResult
+    }
   } finally {
     submitting.value = false
   }
@@ -53,6 +64,7 @@ async function submit() {
 
 async function openConclusion() {
   if (!store.session) return
+  if (dialog.value) await animateResolutionExit(dialog.value)
   emit('close')
   await router.push(`/sessions/${store.session.session_id}/conclusion`)
 }
@@ -60,9 +72,9 @@ async function openConclusion() {
 
 <template>
   <Teleport to="body">
-    <Transition name="dialog">
+    <Transition :css="false" @enter="animateOverlayEnter" @leave="animateOverlayLeave">
       <div v-if="open" class="dialog-layer" @mousedown.self="$emit('close')">
-        <section class="accusation-dialog" role="dialog" aria-modal="true" aria-labelledby="accusation-title">
+        <section ref="dialog" class="accusation-dialog" role="dialog" aria-modal="true" aria-labelledby="accusation-title">
           <header><div><h2 id="accusation-title">提交判断</h2><p>选择对象、支撑线索，并说明你的推理。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="$emit('close')"><AppIcon name="close" /></button></header>
           <div v-if="result" class="accusation-result" :class="{ proven }">
             <AppIcon :name="proven ? 'check' : 'warning'" :size="24" />

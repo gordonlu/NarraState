@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import AppIcon from '../components/AppIcon.vue'
 import SettingsDrawer from '../components/SettingsDrawer.vue'
 import { api } from '../lib/api'
+import { animateConclusionExit, createConclusionEntrance } from '../lib/overlayMotion'
 import { describeFact, formatStoryTime, resultLabel } from '../lib/present'
 import { useSessionStore } from '../stores/session'
 import type { ConclusionReport } from '../types/api'
@@ -16,6 +17,8 @@ const report = ref<ConclusionReport>()
 const settingsOpen = ref(false)
 const loading = ref(true)
 const sessionId = computed(() => String(route.params.sessionId))
+const conclusionMain = ref<HTMLElement>()
+let entrance: ReturnType<typeof createConclusionEntrance>
 
 onMounted(async () => {
   try {
@@ -25,13 +28,18 @@ onMounted(async () => {
       return
     }
     report.value = await api.conclusion(sessionId.value)
+    await nextTick()
+    if (conclusionMain.value) entrance = createConclusionEntrance(conclusionMain.value)
   } finally {
     loading.value = false
   }
 })
 
+onBeforeUnmount(() => entrance?.kill())
+
 async function restart() {
   const session = await store.restartCurrent()
+  if (conclusionMain.value) await animateConclusionExit(conclusionMain.value)
   await router.push(`/sessions/${session.session_id}`)
 }
 </script>
@@ -39,7 +47,7 @@ async function restart() {
 <template>
   <div class="page-shell conclusion-shell">
     <AppHeader :case-title="store.activeCase?.title" @settings="settingsOpen = true" />
-    <main v-if="report" class="conclusion-main">
+    <main v-if="report" ref="conclusionMain" class="conclusion-main">
       <section class="conclusion-lead">
         <span>案件已结案</span>
         <h1>{{ resultLabel(report.result) }}</h1>
