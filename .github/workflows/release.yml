@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Build Web assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: Package ${{ matrix.platform }}
+    needs: web
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            binary: target/release/narrastate-server
+            format: tar
+          - os: windows-latest
+            platform: windows-x64
+            binary: target/release/narrastate-server.exe
+            format: zip
+          - os: macos-15
+            platform: macos-arm64
+            binary: target/release/narrastate-server
+            format: tar
+          - os: macos-15-intel
+            platform: macos-x64
+            binary: target/release/narrastate-server
+            format: tar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web-dist
+      - run: cargo build --locked --release -p narrastate-server
+
+      - name: Package Unix archive
+        if: matrix.format == 'tar'
+        id: package-unix
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME:-manual}"
+          package_name="narrastate-${version}-${{ matrix.platform }}"
+          package_root="release/${package_name}"
+          mkdir -p "${package_root}/data" "${package_root}/web"
+          cp "${{ matrix.binary }}" "${package_root}/narrastate-server"
+          cp -R cases "${package_root}/cases"
+          cp -R web-dist/. "${package_root}/web/"
+          cp packaging/start.sh "${package_root}/start.sh"
+          cp packaging/README.txt LICENSE THIRD_PARTY.md "${package_root}/"
+          chmod +x "${package_root}/narrastate-server" "${package_root}/start.sh"
+          tar -C release -czf "release/${package_name}.tar.gz" "${package_name}"
+          shasum -a 256 "release/${package_name}.tar.gz" > "release/${package_name}.tar.gz.sha256"
+          echo "archive=release/${package_name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Package Windows archive
+        if: matrix.format == 'zip'
+        id: package-windows
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { 'manual' }
+          $packageName = "narrastate-$version-${{ matrix.platform }}"
+          $packageRoot = Join-Path 'release' $packageName
+          New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot 'data'), (Join-Path $packageRoot 'web') | Out-Null
+          Copy-Item '${{ matrix.binary }}' (Join-Path $packageRoot 'narrastate-server.exe')
+          Copy-Item -Recurse 'cases' (Join-Path $packageRoot 'cases')
+          Copy-Item -Recurse 'web-dist/*' (Join-Path $packageRoot 'web')
+          Copy-Item 'packaging/start.ps1', 'packaging/README.txt', 'LICENSE', 'THIRD_PARTY.md' $packageRoot
+          $archive = "release/$packageName.zip"
+          Compress-Archive -Path "$packageRoot/*" -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: Generate SLSA build provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}
+            ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --title "谜局AI $GITHUB_REF_NAME"

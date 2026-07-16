@@ -1,0 +1,4 @@
+# SQLx locks optional database backends even though NarraState enables SQLite only.
+# The Security workflow separately fails if rsa 0.9.10 ever enters the active graph.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

@@ -1,0 +1,86 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          build-mode: none
+          languages: ${{ matrix.language }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+
+  powershell:
+    name: PowerShell security
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error
+          $issues | Format-Table -AutoSize
+          if ($issues.Count -gt 0) { exit 1 }
+      - name: Block high-risk PowerShell capabilities
+        shell: pwsh
+        run: ./tools/check-powershell-security.ps1
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked
+          if cargo tree -i rsa@0.9.10 --edges normal 2>/dev/null | grep -q '^rsa v0.9.10'; then
+            echo 'RUSTSEC-2023-0071 is present in the active dependency graph.' >&2
+            exit 1
+          fi
+          cargo audit
+      - name: Audit npm dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
+
+  tracked-secrets:
+    name: Tracked secret guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: ./tools/check-tracked-secrets.sh
