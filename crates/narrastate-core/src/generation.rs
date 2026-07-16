@@ -73,7 +73,7 @@ impl Default for GenerationLimits {
     fn default() -> Self {
         Self {
             min_characters: 2,
-            max_characters: 6,
+            max_characters: 4,
             min_variants: 1,
             max_variants: 5,
             min_duration_minutes: 10,
@@ -97,7 +97,7 @@ impl GenerationRequest {
     pub fn validate(&self, limits: GenerationLimits) -> Vec<GenerationIssue> {
         let mut issues = Vec::new();
         required_text(&mut issues, "$.theme", &self.theme, limits.max_text_scalars);
-        required_text(
+        optional_text(
             &mut issues,
             "$.setting",
             &self.setting,
@@ -116,6 +116,44 @@ impl GenerationRequest {
             limits.min_characters,
             limits.max_characters,
         );
+        let minimum_for_difficulty = match self.difficulty {
+            Difficulty::Easy => 10,
+            Difficulty::Medium => 25,
+            Difficulty::Hard => 45,
+        };
+        if self.target_duration_minutes < minimum_for_difficulty {
+            issues.push(issue(
+                "GENERATION_INCOHERENT_SCOPE",
+                "$.difficulty",
+                format!("selected difficulty requires at least {minimum_for_difficulty} minutes"),
+            ));
+        }
+        let (max_characters, max_variants) = match self.target_duration_minutes {
+            0..=24 => (3, 1),
+            25..=44 => (4, 2),
+            45..=74 => (4, 3),
+            _ => (4, 5),
+        };
+        if self.character_count > max_characters {
+            issues.push(issue(
+                "GENERATION_INCOHERENT_SCOPE",
+                "$.character_count",
+                format!(
+                    "{} minutes supports at most {max_characters} characters",
+                    self.target_duration_minutes
+                ),
+            ));
+        }
+        if self.variant_count > max_variants {
+            issues.push(issue(
+                "GENERATION_INCOHERENT_SCOPE",
+                "$.variant_count",
+                format!(
+                    "{} minutes supports at most {max_variants} variants",
+                    self.target_duration_minutes
+                ),
+            ));
+        }
         bounded_u32(
             &mut issues,
             "$.variant_count",
@@ -146,6 +184,16 @@ impl GenerationRequest {
             );
         }
         issues
+    }
+}
+
+fn optional_text(issues: &mut Vec<GenerationIssue>, path: &str, value: &str, max: usize) {
+    if value.chars().count() > max {
+        issues.push(issue(
+            "GENERATION_TEXT_TOO_LONG",
+            path,
+            format!("maximum is {max} Unicode scalars"),
+        ));
     }
 }
 
@@ -196,6 +244,74 @@ pub struct GeneratedCaseDraft {
     pub generation_request: GenerationRequest,
     pub schema_version: String,
     pub case: DraftCaseTemplate,
+}
+
+/// Small first-pass plan used to freeze identities and variant intent before detailed generation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedCaseBlueprint {
+    pub case: DraftCaseBlueprint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DraftCaseBlueprint {
+    pub id: CaseId,
+    pub title: String,
+    pub summary: String,
+    pub entities: Vec<Entity>,
+    pub characters: Vec<DraftCharacterPlan>,
+    pub variants: Vec<DraftVariantPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DraftCharacterPlan {
+    pub id: CharacterId,
+    pub name: String,
+    pub role: String,
+    pub public_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DraftVariantPlan {
+    pub id: VariantId,
+    pub title: String,
+    pub description: String,
+    pub responsible_character_id: CharacterId,
+    pub core_truth: String,
+    pub motive: String,
+    pub decisive_evidence_plan: Vec<String>,
+}
+
+/// Shared detailed content generated once and reused by every truth variant.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedSharedCaseDraft {
+    pub required_case_elements: BTreeSet<CaseElement>,
+    pub shared_facts: Vec<Fact>,
+    pub shared_evidence: Vec<EvidenceDefinition>,
+    pub shared_characters: Vec<CharacterDefinition>,
+    pub initial_player_knowledge: PlayerKnowledge,
+}
+
+/// One independently generated truth variant. The envelope makes identity checks explicit.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedVariantDraft {
+    pub weight: Option<u32>,
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fact_replacements: BTreeMap<FactId, Fact>,
+    #[serde(default)]
+    pub evidence_replacements: BTreeMap<EvidenceId, EvidenceDefinition>,
+    #[serde(default)]
+    pub character_replacements: BTreeMap<CharacterId, CharacterDefinition>,
+    #[serde(default)]
+    pub additions: VariantAdditions,
+    pub required_case_elements: Option<BTreeSet<CaseElement>>,
+    pub ending: Option<Ending>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

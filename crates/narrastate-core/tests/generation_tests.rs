@@ -22,7 +22,7 @@ fn request() -> GenerationRequest {
 #[test]
 fn generation_request_enforces_central_limits_with_paths() {
     let mut request = request();
-    request.character_count = 7;
+    request.character_count = 5;
     request.variant_count = 0;
     let issues = request.validate(GenerationLimits::default());
     assert!(issues.iter().any(|issue| {
@@ -41,6 +41,38 @@ fn generation_text_limit_counts_unicode_scalars() {
     assert!(issues
         .iter()
         .any(|issue| issue.code == "GENERATION_TEXT_TOO_LONG" && issue.path == "$.theme"));
+}
+
+#[test]
+fn generation_setting_is_optional_but_still_length_limited() {
+    let mut request = request();
+    request.setting.clear();
+    assert!(!request
+        .validate(GenerationLimits::default())
+        .iter()
+        .any(|issue| issue.path == "$.setting"));
+
+    request.setting = "地".repeat(4_001);
+    assert!(request
+        .validate(GenerationLimits::default())
+        .iter()
+        .any(|issue| { issue.code == "GENERATION_TEXT_TOO_LONG" && issue.path == "$.setting" }));
+}
+
+#[test]
+fn generation_request_rejects_unplayable_duration_scope_combinations() {
+    let mut request = request();
+    request.target_duration_minutes = 10;
+    request.difficulty = Difficulty::Hard;
+    request.character_count = 5;
+    request.variant_count = 5;
+
+    let issues = request.validate(GenerationLimits::default());
+    for path in ["$.difficulty", "$.character_count", "$.variant_count"] {
+        assert!(issues
+            .iter()
+            .any(|issue| { issue.code == "GENERATION_INCOHERENT_SCOPE" && issue.path == path }));
+    }
 }
 
 #[test]

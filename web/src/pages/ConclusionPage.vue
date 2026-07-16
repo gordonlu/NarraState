@@ -63,7 +63,7 @@ async function restart() {
         <article v-for="item in report.decisive_evidence" :key="item.id"><AppIcon name="document" /><div><h3>{{ item.title }}</h3><p>{{ item.description }}</p></div></article>
       </section>
       <section class="conclusion-reasoning"><div class="section-heading"><h2>你的关键推理</h2></div><blockquote>{{ report.reasoning || '本次判断未填写推理说明。' }}</blockquote></section>
-      <footer class="conclusion-actions"><RouterLink class="secondary-button link-button" to="/">返回案件列表</RouterLink><button class="primary-button" type="button" @click="restart">重新开始<AppIcon name="chevron-right" /></button></footer>
+      <footer class="conclusion-actions"><RouterLink class="secondary-button link-button" to="/cases">返回案件列表</RouterLink><button class="primary-button" type="button" @click="restart">重新开始<AppIcon name="chevron-right" /></button></footer>
     </main>
     <div v-else-if="loading" class="full-page-loading">正在生成结案报告…</div>
     <div v-else class="full-page-loading">无法读取结案报告。</div>

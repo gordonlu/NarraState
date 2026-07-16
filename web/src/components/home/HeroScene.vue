@@ -7,6 +7,7 @@ defineProps<{
   content: HomePageContent['hero']
   assets: HomeAssetMap
   playHref: string
+  actionLabel?: string
 }>()
 </script>
 
@@ -28,7 +29,7 @@ defineProps<{
       </h1>
       <p>{{ content.description }}</p>
       <RouterLink class="home-primary-action" :to="playHref">
-        {{ content.primaryAction }}
+        {{ actionLabel ?? content.primaryAction }}
         <AppIcon name="arrow-right" :size="18" />
       </RouterLink>
     </div>

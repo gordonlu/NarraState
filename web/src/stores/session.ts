@@ -20,6 +20,12 @@ interface SavedSession {
   savedAt: string
 }
 
+export interface PendingQuestion {
+  targetCharacterId: string
+  text: string
+  attachedEvidenceIds: string[]
+}
+
 export const useSessionStore = defineStore('session', () => {
   const cases = ref<CaseSummary[]>([])
   const activeCase = ref<CaseDetail>()
@@ -32,10 +38,12 @@ export const useSessionStore = defineStore('session', () => {
   const streaming = ref(false)
   const streamText = ref('')
   const streamStage = ref('')
+  const pendingQuestion = ref<PendingQuestion>()
   const degraded = ref(false)
   const notice = ref<string>()
   const error = ref<string>()
   const lastSession = ref<SavedSession | null>(readSavedSession())
+  const resumableSession = ref<PublicSession>()
   const debug = ref<DebugSession>()
   let actionAbort: AbortController | undefined
 
@@ -51,11 +59,40 @@ export const useSessionStore = defineStore('session', () => {
     error.value = undefined
     try {
       ;[cases.value, config.value] = await Promise.all([api.cases(), api.config()])
+      await refreshSavedSession()
     } catch (reason) {
       setError(reason)
     } finally {
       loading.value = false
     }
+  }
+
+  async function refreshSavedSession() {
+    if (!lastSession.value) {
+      resumableSession.value = undefined
+      return
+    }
+    try {
+      const saved = await api.session(lastSession.value.sessionId)
+      if (saved.status === 'Active') {
+        resumableSession.value = saved
+        return
+      }
+      clearSavedSession()
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.problem.status === 404) {
+        clearSavedSession()
+        notice.value = '上次调查已不存在，已清除本地继续入口'
+        return
+      }
+      throw reason
+    }
+  }
+
+  function clearSavedSession() {
+    localStorage.removeItem(LAST_SESSION_KEY)
+    lastSession.value = null
+    resumableSession.value = undefined
   }
 
   async function loadCase(caseId: string) {
@@ -112,6 +149,13 @@ export const useSessionStore = defineStore('session', () => {
 
   async function sendQuestion(text: string) {
     if (!session.value || !activeCharacterId.value) throw new Error('没有活动会话')
+    const targetCharacterId = activeCharacterId.value
+    const evidenceIds = [...attachedEvidenceIds.value]
+    pendingQuestion.value = {
+      targetCharacterId,
+      text,
+      attachedEvidenceIds: evidenceIds,
+    }
     streaming.value = true
     streamText.value = ''
     streamStage.value = '正在提交问题'
@@ -126,9 +170,9 @@ export const useSessionStore = defineStore('session', () => {
         {
           client_action_id: crypto.randomUUID(),
           expected_revision: session.value.revision,
-          target_character_id: activeCharacterId.value,
+          target_character_id: targetCharacterId,
           text,
-          attached_evidence_ids: [...attachedEvidenceIds.value],
+          attached_evidence_ids: evidenceIds,
         },
         ({ event, data }) => {
           if (event === 'turn.accepted') streamStage.value = '问题已接收'
@@ -140,6 +184,7 @@ export const useSessionStore = defineStore('session', () => {
       )
       degraded.value = result.degraded
       session.value = await api.session(sessionId)
+      pendingQuestion.value = undefined
       attachedEvidenceIds.value = []
       streamText.value = ''
       streamStage.value = ''
@@ -154,10 +199,15 @@ export const useSessionStore = defineStore('session', () => {
       }
       try {
         session.value = await api.session(sessionId)
+        pendingQuestion.value = undefined
         notice.value = '连接已恢复，进度已同步'
         saveSession()
-      } catch {
-        // Preserve the actionable original error when recovery is unavailable.
+      } catch (recoveryReason) {
+        pendingQuestion.value = undefined
+        const recoveryMessage = toMessage(recoveryReason)
+        error.value = error.value
+          ? `${error.value}；进度同步失败：${recoveryMessage}`
+          : `进度同步失败：${recoveryMessage}`
       }
       throw reason
     } finally {
@@ -246,6 +296,7 @@ export const useSessionStore = defineStore('session', () => {
     }
     localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(saved))
     lastSession.value = saved
+    resumableSession.value = session.value.status === 'Active' ? session.value : undefined
   }
 
   function setError(reason: unknown) {
@@ -266,10 +317,12 @@ export const useSessionStore = defineStore('session', () => {
     streaming,
     streamText,
     streamStage,
+    pendingQuestion,
     degraded,
     notice,
     error,
     lastSession,
+    resumableSession,
     debug,
     bootstrap,
     loadCase,

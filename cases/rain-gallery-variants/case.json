@@ -1,7 +1,7 @@
 {
   "schema_version": "0.2",
   "id": "rain-gallery-variants",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "title": "雨夜画廊：多重真相",
   "summary": "一件密封待拍画作在闭馆后的二十分钟内从私人画廊消失。三名当晚在场人员各怀秘密，其中一人策划了盗窃。",
   "locale": "zh-CN",
@@ -752,7 +752,21 @@
         "fact_shen_alibi"
       ],
       "initial_beliefs": [],
-      "claims": [],
+      "claims": [
+        {
+          "id": "claim_shen_at_entrance",
+          "owner": "shen-an",
+          "proposition": {
+            "subject": "shen-an",
+            "predicate": "was_with_security_guard",
+            "object": true
+          },
+          "kind": "Truth",
+          "available_from": "Calm",
+          "invalidated_by": [],
+          "fallback_claim": null
+        }
+      ],
       "defenses": [
         {
           "id": "hr_denial",
@@ -810,7 +824,21 @@
         "fact_lin_alibi"
       ],
       "initial_beliefs": [],
-      "claims": [],
+      "claims": [
+        {
+          "id": "claim_lin_with_intern",
+          "owner": "lin-yue",
+          "proposition": {
+            "subject": "lin-yue",
+            "predicate": "was_with_intern",
+            "object": true
+          },
+          "kind": "Truth",
+          "available_from": "Calm",
+          "invalidated_by": [],
+          "fallback_claim": null
+        }
+      ],
       "defenses": [
         {
           "id": "lin_denial",

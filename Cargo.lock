@@ -1085,6 +1085,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
+ "futures-util",
  "narrastate-core",
  "narrastate-runtime",
  "reqwest",
@@ -1111,6 +1112,7 @@ dependencies = [
 name = "narrastate-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "futures-util",

@@ -474,7 +474,17 @@
         "fact_shen_alibi"
       ],
       "initial_beliefs": [],
-      "claims": [],
+      "claims": [
+        {
+          "id": "claim_shen_at_entrance",
+          "owner": "shen-an",
+          "proposition": { "subject": "shen-an", "predicate": "was_with_security_guard", "object": true },
+          "kind": "Truth",
+          "available_from": "Calm",
+          "invalidated_by": [],
+          "fallback_claim": null
+        }
+      ],
       "defenses": [
         {
           "id": "hr_denial",
@@ -522,7 +532,17 @@
         "fact_lin_alibi"
       ],
       "initial_beliefs": [],
-      "claims": [],
+      "claims": [
+        {
+          "id": "claim_lin_with_intern",
+          "owner": "lin-yue",
+          "proposition": { "subject": "lin-yue", "predicate": "was_with_intern", "object": true },
+          "kind": "Truth",
+          "available_from": "Calm",
+          "invalidated_by": [],
+          "fallback_claim": null
+        }
+      ],
       "defenses": [
         {
           "id": "lin_denial",

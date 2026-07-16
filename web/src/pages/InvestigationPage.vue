@@ -16,6 +16,7 @@ import {
   createInvestigationEntrance,
   type EvidenceDragController,
 } from '../lib/appMotion'
+import { buildTurnNumberIndex, conversationForCharacter } from '../lib/conversation'
 import { describeFact, formatStoryTime, speakerId } from '../lib/present'
 import { useSessionStore } from '../stores/session'
 import type { DialogueEntry } from '../types/api'
@@ -32,6 +33,7 @@ const mobileTab = ref<MobileTab>('dialogue')
 const settingsOpen = ref(false)
 const accusationOpen = ref(false)
 const developerOpen = ref(false)
+const prologueOpen = ref(false)
 const transcript = ref<HTMLElement>()
 const inference = ref('')
 const evidenceQuery = ref('')
@@ -44,8 +46,20 @@ let evidenceDrag: EvidenceDragController | undefined
 let sceneReady = false
 
 const sessionId = computed(() => String(route.params.sessionId))
+const visibleConversation = computed(() =>
+  conversationForCharacter(store.session?.conversation ?? [], store.activeCharacterId),
+)
+const turnNumberById = computed(() =>
+  buildTurnNumberIndex(store.session?.conversation ?? []),
+)
+const pendingTurnNumber = computed(() => (store.session?.current_turn ?? 0) + 1)
 const statements = computed(() =>
-  (store.session?.conversation ?? []).filter((entry) => typeof entry.speaker !== 'string'),
+  visibleConversation.value.filter((entry) => typeof entry.speaker !== 'string'),
+)
+const visiblePendingQuestion = computed(() =>
+  store.pendingQuestion?.targetCharacterId === store.activeCharacterId
+    ? store.pendingQuestion
+    : undefined,
 )
 const timeline = computed(() =>
   [...(store.activeCase?.facts ?? [])].sort((a, b) =>
@@ -71,6 +85,10 @@ onMounted(async () => {
     const session = await store.restoreSession(sessionId.value)
     if (session.status === 'Resolved') await router.replace(`/sessions/${session.session_id}/conclusion`)
     inference.value = localStorage.getItem(`narrastate:inference:${sessionId.value}`) ?? ''
+    const prologueKey = `narrastate:prologue:${sessionId.value}`
+    prologueOpen.value = session.current_turn === 0
+      && session.conversation.length === 0
+      && localStorage.getItem(prologueKey) !== 'seen'
     await nextTick()
     if (investigationGrid.value) {
       entrance = createInvestigationEntrance(investigationGrid.value)
@@ -123,6 +141,10 @@ function entrySpeaker(entry: DialogueEntry) {
   return characterName(id)
 }
 
+function entryTurnNumber(entry: DialogueEntry) {
+  return turnNumberById.value.get(entry.turn_id) ?? 1
+}
+
 async function send() {
   const text = question.value.trim()
   if (!text || store.streaming) return
@@ -135,6 +157,7 @@ async function send() {
 }
 
 async function selectCharacter(characterId: string) {
+  if (store.streaming) return
   mobileTab.value = 'dialogue'
   if (store.activeCharacterId === characterId || !dialoguePanel.value) {
     store.activeCharacterId = characterId
@@ -245,6 +268,11 @@ function onComposerKeydown(event: KeyboardEvent) {
     void send()
   }
 }
+
+function enterInvestigation() {
+  localStorage.setItem(`narrastate:prologue:${sessionId.value}`, 'seen')
+  prologueOpen.value = false
+}
 </script>
 
 <template>
@@ -253,11 +281,28 @@ function onComposerKeydown(event: KeyboardEvent) {
       :case-title="store.activeCase?.title"
       :saved="Boolean(store.session) && !store.streaming"
       show-conclusion
+      back-label="返回案件"
+      @back="router.push(`/cases/${store.activeCase?.id ?? store.session?.case_id}`)"
       @settings="settingsOpen = true"
       @conclusion="accusationOpen = true"
     />
     <NoticeBar v-if="store.notice" :message="store.notice" :tone="store.degraded ? 'warning' : 'info'" @close="store.clearNotice" />
     <NoticeBar v-else-if="store.error" :message="store.error" tone="error" @close="store.error = undefined" />
+
+    <section v-if="prologueOpen && store.activeCase" class="investigation-prologue" role="dialog" aria-modal="true" aria-labelledby="prologue-title">
+      <div class="prologue-card">
+        <span>调查开始 · CASE OPEN</span>
+        <h1 id="prologue-title">{{ store.activeCase.title }}</h1>
+        <p class="prologue-summary">{{ store.activeCase.summary }}</p>
+        <ol>
+          <li><strong>先听说法</strong><span>选择一名人物，从事情经过开始询问。</span></li>
+          <li><strong>核对记录</strong><span>用公开事件线和已发现线索检查说法。</span></li>
+          <li><strong>追问矛盾</strong><span>附加相关线索继续提问，再提交你的判断。</span></li>
+        </ol>
+        <small>本局真相已经锁定；你的行动会改变人物如何回应，不会改写事实。</small>
+        <button class="primary-button" type="button" @click="enterInvestigation">进入调查<AppIcon name="arrow-right" :size="17" /></button>
+      </div>
+    </section>
 
     <main v-if="store.session && store.activeCase" ref="investigationGrid" class="investigation-grid" :data-mobile-tab="mobileTab">
       <aside class="people-panel workspace-people">
@@ -275,7 +320,7 @@ function onComposerKeydown(event: KeyboardEvent) {
           </article>
           <div v-else class="people-list">
             <div v-for="character in store.activeCase.characters" :key="character.id" class="person-row-wrap" :class="{ selected: store.activeCharacterId === character.id }" :data-character-source="character.id" :data-flip-id="`character-${character.id}`">
-              <button class="person-row" type="button" @click="selectCharacter(character.id)">
+              <button class="person-row" type="button" :disabled="store.streaming" @click="selectCharacter(character.id)">
                 <span class="person-mark">{{ character.name.slice(0, 1) }}</span>
                 <span><strong>{{ character.name }}</strong><small>{{ character.role }}</small></span>
               </button>
@@ -298,14 +343,21 @@ function onComposerKeydown(event: KeyboardEvent) {
           <button class="mobile-context-button" type="button" @click="mobileTab = 'people'">切换人物</button>
         </header>
         <div ref="transcript" class="transcript" aria-live="polite">
-          <div v-if="store.session.conversation.length === 0" class="transcript-empty">
-            <h2>从一个具体问题开始</h2>
-            <p>询问公开事件，或附加线索来核对角色陈述。</p>
+          <div v-if="visibleConversation.length === 0 && !visiblePendingQuestion" class="transcript-empty">
+            <span>第一步 · 听取说法</span>
+            <h2>先听{{ store.activeCharacter?.name }}从头说明</h2>
+            <p>第一轮不必急着出示线索。先建立完整说法，再从时间、地点和行为中寻找需要核对之处。</p>
+            <button type="button" @click="question = '请从头说说，事情发生前后你做了什么？'">使用建议问题</button>
           </div>
-          <article v-for="(entry, index) in store.session.conversation" :key="`${entry.turn_id}-${entrySpeaker(entry)}`" class="transcript-turn" :class="{ player: speakerId(entry.speaker) === 'Player' }" :data-turn-index="index">
-            <header><span class="speaker-mark">{{ entrySpeaker(entry).slice(0, 1) }}</span><strong>{{ entrySpeaker(entry) }}</strong><time>回合 {{ store.session.conversation.indexOf(entry) + 1 }}</time></header>
+          <article v-for="(entry, index) in visibleConversation" :key="`${entry.turn_id}-${entrySpeaker(entry)}`" class="transcript-turn" :class="{ player: speakerId(entry.speaker) === 'Player' }" :data-turn-index="index">
+            <header><span class="speaker-mark">{{ entrySpeaker(entry).slice(0, 1) }}</span><strong>{{ entrySpeaker(entry) }}</strong><time>回合 {{ entryTurnNumber(entry) }}</time></header>
             <p>{{ entry.text }}</p>
             <div v-if="entry.attached_evidence.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ entry.attached_evidence.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
+          </article>
+          <article v-if="visiblePendingQuestion" class="transcript-turn player pending-player-turn">
+            <header><span class="speaker-mark">你</span><strong>你</strong><time>回合 {{ pendingTurnNumber }}</time></header>
+            <p>{{ visiblePendingQuestion.text }}</p>
+            <div v-if="visiblePendingQuestion.attachedEvidenceIds.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ visiblePendingQuestion.attachedEvidenceIds.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
           </article>
           <article v-if="store.streaming" class="transcript-turn streaming-turn">
             <header><span class="streaming-mark"><i /><i /><i /></span><strong>{{ store.activeCharacter?.name }}</strong><time>{{ store.streamStage }}</time></header>
@@ -357,7 +409,7 @@ function onComposerKeydown(event: KeyboardEvent) {
         </div>
         <div v-else-if="researchTab === 'statements'" class="research-content">
           <div v-if="statements.length === 0" class="empty-state">角色陈述会随调查记录在这里。</div>
-          <article v-for="entry in statements" :key="entry.turn_id" class="statement-row"><strong>{{ entrySpeaker(entry) }}</strong><p>{{ entry.text }}</p><small>回合 {{ store.session.conversation.indexOf(entry) + 1 }}</small></article>
+          <article v-for="entry in statements" :key="entry.turn_id" class="statement-row"><strong>{{ entrySpeaker(entry) }}</strong><p>{{ entry.text }}</p><small>回合 {{ entryTurnNumber(entry) }}</small></article>
         </div>
         <div v-else class="research-content inference-content">
           <label>玩家推断<textarea v-model="inference" placeholder="记录你对人物、时间和线索关系的判断。仅保存在当前浏览器。" /></label>

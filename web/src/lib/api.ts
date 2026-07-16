@@ -6,7 +6,7 @@ import type {
   ConclusionReport,
   DebugSession,
   GenerationJob,
-  GenerationRequest,
+  CreateGenerationJobRequest,
   ProblemDetails,
   PublicConfig,
   PublicEvent,
@@ -69,7 +69,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  generateCase: (payload: GenerationRequest) => request<GenerationJob>('/api/v1/case-generation/jobs', {
+  generateCase: (payload: CreateGenerationJobRequest) => request<GenerationJob>('/api/v1/case-generation/jobs', {
     method: 'POST', body: JSON.stringify(payload),
   }),
   generationJob: (jobId: string) => request<GenerationJob>(`/api/v1/case-generation/jobs/${encodeURIComponent(jobId)}`),

@@ -25,6 +25,9 @@ const beginning = ref(false)
 let entrance: ReturnType<typeof createBriefEntrance>
 
 const caseId = computed(() => String(route.params.caseId))
+const resumableHere = computed(() =>
+  store.resumableSession?.case_id === caseId.value ? store.resumableSession : undefined,
+)
 const timeline = computed(() =>
   [...(store.activeCase?.facts ?? [])].sort((a, b) => formatStoryTime(a.happened_at).localeCompare(formatStoryTime(b.happened_at))),
 )
@@ -59,11 +62,16 @@ async function begin() {
     beginning.value = false
   }
 }
+
+async function continueInvestigation() {
+  if (!resumableHere.value) return
+  await router.push(`/sessions/${resumableHere.value.session_id}`)
+}
 </script>
 
 <template>
   <div class="page-shell brief-shell">
-    <AppHeader back-label="返回案件" @back="router.push('/')" @settings="settingsOpen = true" />
+    <AppHeader back-label="返回案件列表" @back="router.push('/cases')" @settings="settingsOpen = true" />
     <NoticeBar v-if="store.error" :message="store.error" tone="error" @close="store.error = undefined" />
     <main v-if="store.activeCase" ref="briefMain" class="brief-main">
       <section class="brief-lead">
@@ -104,6 +112,13 @@ async function begin() {
         </div>
       </section>
       <section class="brief-actions">
+        <div v-if="resumableHere" class="brief-resume">
+          <span>调查仍在进行</span>
+          <strong>已进行 {{ resumableHere.current_turn }} 回合</strong>
+          <p>继续会读取服务端保存的最新进度，不会重新选择或改变本局真相。</p>
+          <button class="primary-button begin-button" type="button" @click="continueInvestigation">继续调查<AppIcon name="chevron-right" /></button>
+          <div class="brief-new-game-divider"><span>或开始一个新游戏</span></div>
+        </div>
         <div class="mode-choice" role="radiogroup" aria-label="真相模式">
           <button type="button" :class="{ selected: truthMode === 'default' }" @click="truthMode = 'default'"><strong>经典真相</strong><span>使用作者推荐版本</span></button>
           <button type="button" :class="{ selected: truthMode === 'random' }" @click="truthMode = 'random'"><strong>随机真相</strong><span>按 seed 稳定选择</span></button>

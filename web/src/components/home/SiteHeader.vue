@@ -6,10 +6,15 @@ import AppIcon from '../AppIcon.vue'
 defineProps<{
   brand: HomePageContent['brand']
   navigation: HomePageContent['navigation']
+  casesHref: string
   playHref: string
+  playLabel?: string
 }>()
 
-defineEmits<{ settings: [] }>()
+defineEmits<{
+  mechanism: [event: MouseEvent]
+  settings: []
+}>()
 
 const menuOpen = ref(false)
 </script>
@@ -30,8 +35,9 @@ const menuOpen = ref(false)
       <AppIcon :name="menuOpen ? 'close' : 'menu'" :size="22" />
     </button>
     <nav id="home-navigation" class="home-navigation" aria-label="首页导航">
-      <a href="#mechanism" @click="menuOpen = false">{{ navigation.mechanism }}</a>
-      <RouterLink :to="playHref" @click="menuOpen = false">{{ navigation.cases }}</RouterLink>
+      <a href="#mechanism" @click="menuOpen = false; $emit('mechanism', $event)">{{ navigation.mechanism }}</a>
+      <RouterLink :to="casesHref" @click="menuOpen = false">{{ navigation.cases }}</RouterLink>
+      <RouterLink to="/generate" @click="menuOpen = false">{{ navigation.generate }}</RouterLink>
       <a href="https://github.com/gordonlu/NarraState" target="_blank" rel="noreferrer">{{ navigation.openSource }}</a>
       <a href="https://github.com/gordonlu/NarraState/tree/main/docs" target="_blank" rel="noreferrer">{{ navigation.docs }}</a>
       <button class="home-settings-button" type="button" @click="$emit('settings'); menuOpen = false">
@@ -39,7 +45,7 @@ const menuOpen = ref(false)
         <span>{{ navigation.settings }}</span>
       </button>
       <RouterLink class="home-nav-cta" :to="playHref" @click="menuOpen = false">
-        {{ navigation.play }}
+        {{ playLabel ?? navigation.play }}
         <AppIcon name="arrow-right" :size="16" />
       </RouterLink>
     </nav>

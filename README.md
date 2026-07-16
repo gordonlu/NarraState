@@ -76,15 +76,21 @@ gh attestation verify <下载的压缩包> --repo gordonlu/NarraState
 
 ## 模型配置
 
-复制 `.env.example` 中需要的变量到启动环境。密钥可以从 `NARRASTATE_API_KEY` 读取，或由设置页保存到服务端 `data/provider.env`；路径可通过 `NARRASTATE_PROVIDER_ENV_FILE` 修改。不读取通用 `OPENAI_API_KEY`，也不写入 SQLite、浏览器、事件或日志。设置页支持 DeepSeek 等 OpenAI-compatible 服务。
+普通用户直接在网页“设置”中配置即可，不需要创建 `.env`。密钥可以从 `NARRASTATE_API_KEY` 读取，或由设置页保存到服务端 `data/provider.env`；路径可通过 `NARRASTATE_PROVIDER_ENV_FILE` 修改。不读取通用 `OPENAI_API_KEY`，也不写入 SQLite、浏览器、事件或日志。设置页支持 DeepSeek 等 OpenAI-compatible 服务。
 
 ```bash
 NARRASTATE_BASE_URL=https://api.openai.com/v1
 NARRASTATE_MODEL=gpt-4o-mini
+NARRASTATE_GENERATION_TIMEOUT_SECS=180
+NARRASTATE_GENERATION_MAX_TOKENS=65536
 NARRASTATE_API_KEY=your-key
 ```
 
-Compose 会自动读取仓库根目录的 `.env`。API Key 缺失或为空时，首页显示未配置，Mock 模式仍然可用。
+`.env.example` 仅作为高级环境覆盖参考：Compose 会自动读取仓库根目录的 `.env`，本地 `./start.sh` 和 `.\start.ps1` 不会自动加载该文件。API Key 缺失或为空时，首页显示未配置，Mock 模式仍然可用。
+
+案件生成默认允许单次模型请求等待 180 秒，普通对话仍使用较短超时。响应较慢的本地模型或兼容服务可以在启动前设置 `NARRASTATE_GENERATION_TIMEOUT_SECS`，允许范围为 30–900 秒。
+
+案件生成采用“蓝图 + 共享内容 + 独立真相变体”的分段输出，通常调用次数为 `2 + 真相变体数量`；单个失败变体可以独立纠错。每个分段的结构化输出预算默认为 65536 token，可通过 `NARRASTATE_GENERATION_MAX_TOKENS` 在 4096–65536 之间调低。该设置只影响案件生成，不会让普通角色对话变得冗长；模型或兼容服务仍可能应用自身更低的输出上限。
 
 服务端安装的 v0.2 案件包默认写入 `data/installed-cases`，可通过 `NARRASTATE_CASE_INSTALL_DIR` 修改。安装 API 只接受案件内容，不接受客户端提供服务器文件路径。
 

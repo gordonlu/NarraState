@@ -262,6 +262,7 @@ impl PipelineRun {
     fn provider_failure(self, error: ProviderError) -> GenerationPipelineFailure {
         let code = match error {
             ProviderError::Timeout => "GENERATION_PROVIDER_TIMEOUT",
+            ProviderError::OutputTruncated => "GENERATION_PROVIDER_OUTPUT_TRUNCATED",
             ProviderError::InvalidResponse(_) => "GENERATION_PROVIDER_INVALID_RESPONSE",
             ProviderError::Unauthorized => "GENERATION_PROVIDER_UNAUTHORIZED",
             _ => "GENERATION_PROVIDER_FAILED",

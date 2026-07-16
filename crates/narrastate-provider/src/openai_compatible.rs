@@ -121,27 +121,126 @@ impl LlmProvider for OpenAiProvider {
         messages: &[ChatMessage],
         response_schema: &serde_json::Value,
     ) -> Result<ProviderResponse<serde_json::Value>, ProviderError> {
-        let value = self.send(serde_json::json!({
+        let native = self.send(serde_json::json!({
             "model": self.config.model,
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 4096,
+            "max_tokens": self.config.structured_output_max_tokens,
             "response_format": {"type": "json_schema", "json_schema": {"name": "structured_output", "schema": response_schema, "strict": true}}
-        })).await?;
-        let content = value
-            .pointer("/choices/0/message/content")
-            .and_then(|content| content.as_str())
-            .ok_or_else(|| {
-                ProviderError::InvalidResponse("missing choices[0].message.content".into())
-            })?;
-        let output = serde_json::from_str(content).map_err(|error| {
-            ProviderError::InvalidResponse(format!("structured response JSON: {error}"))
-        })?;
-        Ok(ProviderResponse {
-            output,
-            usage: token_usage(&value),
-        })
+        })).await;
+        let (value, native_schema_supported) = match native {
+            Ok(value) => (value, true),
+            Err(error) if should_retry_without_json_schema(&error) => {
+                let mut fallback_messages = vec![ChatMessage::system(format!(
+                    "Your provider does not support native JSON Schema mode. Return one data instance that strictly matches this schema; no Markdown or extra keys. Never copy or emit schema-definition keywords such as properties, type, $ref, oneOf, anyOf, required, or definitions as field values. Enum fields must contain one allowed scalar enum value, not a schema object:\n{}",
+                    serde_json::to_string(response_schema).unwrap_or_default()
+                ))];
+                fallback_messages.extend(messages.iter().cloned());
+                let value = self
+                    .send(serde_json::json!({
+                        "model": self.config.model,
+                        "messages": fallback_messages,
+                        "temperature": 0.3,
+                        "max_tokens": self.config.structured_output_max_tokens,
+                        "response_format": {"type": "json_object"}
+                    }))
+                    .await?;
+                (value, false)
+            }
+            Err(error) => return Err(error),
+        };
+        let mut usage = token_usage(&value);
+        let output = match parse_structured_output(&value) {
+            Ok(output) => output,
+            Err(ProviderError::OutputTruncated) => {
+                let mut correction_messages = vec![ChatMessage::system(format!(
+                    "The previous response reached the provider output limit. Regenerate the complete JSON object from the original request in a substantially more compact form. Use short strings, remove stylistic elaboration and repeated descriptions, and reuse shared definitions by ID. Preserve every required fact, evidence link, reference, disclosure prerequisite, solution requirement, and requested variant. Do not continue the partial response and do not return a patch. Required schema:\n{}",
+                    serde_json::to_string(response_schema).unwrap_or_default()
+                ))];
+                correction_messages.extend(messages.iter().cloned());
+                let response_format = if native_schema_supported {
+                    serde_json::json!({"type": "json_schema", "json_schema": {"name": "structured_output", "schema": response_schema, "strict": true}})
+                } else {
+                    serde_json::json!({"type": "json_object"})
+                };
+                let corrected = self
+                    .send(serde_json::json!({
+                        "model": self.config.model,
+                        "messages": correction_messages,
+                        "temperature": 0.15,
+                        "max_tokens": self.config.structured_output_max_tokens,
+                        "response_format": response_format
+                    }))
+                    .await?;
+                usage = usage.combine(token_usage(&corrected));
+                parse_structured_output(&corrected)?
+            }
+            Err(first_error) if is_repairable_structured_parse(&first_error) => {
+                let mut correction_messages = vec![ChatMessage::system(format!(
+                    "The previous response was not valid JSON for the requested structured data. Regenerate the complete data instance from the original request. Return one JSON object only; do not quote or patch the previous response. Never emit JSON Schema keywords as data. Parse error: {first_error}\nRequired schema:\n{}",
+                    serde_json::to_string(response_schema).unwrap_or_default()
+                ))];
+                correction_messages.extend(messages.iter().cloned());
+                let corrected = self
+                    .send(serde_json::json!({
+                        "model": self.config.model,
+                        "messages": correction_messages,
+                        "temperature": 0.2,
+                        "max_tokens": self.config.structured_output_max_tokens,
+                        "response_format": {"type": "json_object"}
+                    }))
+                    .await?;
+                usage = usage.combine(token_usage(&corrected));
+                parse_structured_output(&corrected)?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(ProviderResponse { output, usage })
     }
+}
+
+fn parse_structured_output(value: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
+    if value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|reason| reason.as_str())
+        .is_some_and(|reason| reason == "length")
+    {
+        return Err(ProviderError::OutputTruncated);
+    }
+    let content = value
+        .pointer("/choices/0/message/content")
+        .and_then(|content| content.as_str())
+        .ok_or_else(|| {
+            ProviderError::InvalidResponse("missing choices[0].message.content".into())
+        })?;
+    serde_json::from_str(content).map_err(|error| {
+        if error.is_eof() {
+            ProviderError::OutputTruncated
+        } else {
+            ProviderError::InvalidResponse(format!("structured response JSON: {error}"))
+        }
+    })
+}
+
+fn is_repairable_structured_parse(error: &ProviderError) -> bool {
+    matches!(error, ProviderError::InvalidResponse(_))
+}
+
+fn should_retry_without_json_schema(error: &ProviderError) -> bool {
+    let ProviderError::Unknown(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    [
+        "json_schema",
+        "response_format",
+        "unsupported",
+        "not supported",
+        "parameter",
+        "not valid",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn token_usage(value: &serde_json::Value) -> TokenUsage {
@@ -152,5 +251,49 @@ fn token_usage(value: &serde_json::Value) -> TokenUsage {
         output_tokens: value
             .pointer("/usage/completion_tokens")
             .and_then(|v| v.as_u64()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_repairable_structured_parse, parse_structured_output, should_retry_without_json_schema,
+    };
+    use narrastate_runtime::ports::ProviderError;
+
+    #[test]
+    fn unsupported_structured_output_errors_use_compatible_json_mode() {
+        assert!(should_retry_without_json_schema(&ProviderError::Unknown(
+            "A parameter specified in the request is not valid".into(),
+        )));
+        assert!(!should_retry_without_json_schema(
+            &ProviderError::Unauthorized
+        ));
+    }
+
+    #[test]
+    fn eof_json_errors_are_classified_as_truncated_output() {
+        let incomplete = serde_json::json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "{\"case\":{\"title\":\"unfinished\"}"}}]
+        });
+        assert!(matches!(
+            parse_structured_output(&incomplete),
+            Err(ProviderError::OutputTruncated)
+        ));
+
+        let length = serde_json::json!({
+            "choices": [{"finish_reason": "length", "message": {"content": "{}"}}]
+        });
+        assert!(matches!(
+            parse_structured_output(&length),
+            Err(ProviderError::OutputTruncated)
+        ));
+        assert!(!is_repairable_structured_parse(
+            &ProviderError::OutputTruncated
+        ));
+
+        assert!(is_repairable_structured_parse(
+            &ProviderError::InvalidResponse("malformed JSON".into())
+        ));
     }
 }

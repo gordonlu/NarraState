@@ -16,6 +16,7 @@ export interface HomeScrollOptions {
 
 export interface HomeScrollController {
   timeline: gsap.core.Timeline
+  scrollToLabel: (label: string) => boolean
   destroy: () => void
 }
 
@@ -136,6 +137,17 @@ export function createHomeScrollTimeline(
 
   return {
     timeline,
+    scrollToLabel: (label) => {
+      const labelTime = timeline.labels[label]
+      const scrollTrigger = timeline.scrollTrigger
+      const duration = timeline.duration()
+      if (labelTime === undefined || !scrollTrigger || duration <= 0) return false
+      scrollTrigger.refresh()
+      const progress = labelTime / duration
+      const target = scrollTrigger.start + (scrollTrigger.end - scrollTrigger.start) * progress
+      window.scrollTo({ top: target, behavior: 'smooth' })
+      return true
+    },
     destroy: () => {
       timeline.scrollTrigger?.kill()
       timeline.kill()

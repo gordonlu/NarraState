@@ -92,3 +92,12 @@ export function animateGenerationEvents(elements: HTMLElement[]) {
     { scale: 1, stagger: 0.06, duration: appMotion.interface, ease: 'back.out(1.7)', clearProps: 'transform' },
   )
 }
+
+export function animateGenerationStart(element: HTMLElement) {
+  if (prefersReducedMotion()) return
+  gsap.fromTo(
+    element,
+    { autoAlpha: 0, y: 22 },
+    { autoAlpha: 1, y: 0, duration: appMotion.narrative, ease: appMotion.ease, clearProps: 'opacity,visibility,transform' },
+  )
+}

@@ -47,6 +47,8 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DialogueEntry {
     pub turn_id: TurnId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_character_id: Option<CharacterId>,
     pub speaker: DialogueSpeaker,
     pub text: String,
     pub attached_evidence: Vec<EvidenceId>,

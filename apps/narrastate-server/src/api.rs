@@ -42,15 +42,23 @@ use narrastate_runtime::evaluator::covered_elements;
 use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
 use narrastate_runtime::ports::{
     CaseGenerationProvider, ChatMessage, CommitOutcome, GenerationJobRecord,
+    GenerationProgressReporter, GenerationProgressStage, GenerationProgressUpdate,
     ImageGenerationProvider, ImageProviderSettings, InstalledCaseRecord, LlmCallMetadata,
     LlmConfig, LlmProvider, ProviderError, ProviderSettings, Repository, StorageError, TokenUsage,
 };
 use narrastate_runtime::{DialoguePlanner, TransitionEngine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
+
+const DEFAULT_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 180;
+const MIN_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 30;
+const MAX_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 900;
+const DEFAULT_GENERATION_OUTPUT_MAX_TOKENS: u32 = 65_536;
+const MIN_GENERATION_OUTPUT_MAX_TOKENS: u32 = 4_096;
+const MAX_GENERATION_OUTPUT_MAX_TOKENS: u32 = 65_536;
 
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
@@ -64,6 +72,76 @@ pub struct AppState {
     image_provider_env_path: PathBuf,
     ephemeral_image_api_key: RwLock<Option<String>>,
     generation_provider_override: RwLock<Option<Arc<dyn CaseGenerationProvider>>>,
+}
+
+struct JobGenerationProgressReporter {
+    repo: Arc<dyn Repository>,
+    job_id: GenerationJobId,
+    write_lock: Mutex<()>,
+}
+
+impl JobGenerationProgressReporter {
+    fn new(repo: Arc<dyn Repository>, job_id: GenerationJobId) -> Self {
+        Self {
+            repo,
+            job_id,
+            write_lock: Mutex::new(()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GenerationProgressReporter for JobGenerationProgressReporter {
+    async fn report(&self, update: GenerationProgressUpdate) -> Result<(), ProviderError> {
+        let _guard = self.write_lock.lock().await;
+        let mut record = self
+            .repo
+            .load_generation_job(&self.job_id)
+            .await
+            .map_err(|error| {
+                ProviderError::Unknown(format!("generation progress load failed: {error}"))
+            })?;
+        if record.status.is_terminal() {
+            return Err(ProviderError::Unknown(
+                "generation progress cannot update a terminal job".into(),
+            ));
+        }
+        let mut events = serde_json::from_str::<Vec<serde_json::Value>>(&record.status_events_json)
+            .map_err(|error| {
+                ProviderError::InvalidResponse(format!("generation progress events: {error}"))
+            })?;
+        let progress_event = serde_json::json!({
+            "sequence": events.len(),
+            "to": "drafting",
+            "stage": update.stage,
+            "completed": update.completed,
+            "total": update.total,
+        });
+        let replaces_drafting_placeholder = update.stage == GenerationProgressStage::Blueprint
+            && events.last().is_some_and(|event| {
+                event.get("to").and_then(serde_json::Value::as_str) == Some("drafting")
+                    && event.get("stage").is_none()
+            });
+        if replaces_drafting_placeholder {
+            let mut progress_event = progress_event;
+            let last_index = events.len().saturating_sub(1);
+            progress_event["sequence"] = serde_json::json!(last_index);
+            events[last_index] = progress_event;
+        } else {
+            events.push(progress_event);
+        }
+        record.status = GenerationStatus::Drafting;
+        record.status_events_json = serde_json::to_string(&events).map_err(|error| {
+            ProviderError::InvalidResponse(format!("generation progress events: {error}"))
+        })?;
+        record.updated_at = chrono::Utc::now().to_rfc3339();
+        self.repo
+            .save_generation_job(&record)
+            .await
+            .map_err(|error| {
+                ProviderError::Unknown(format!("generation progress save failed: {error}"))
+            })
+    }
 }
 
 impl AppState {
@@ -114,6 +192,30 @@ impl AppState {
     }
 
     async fn llm_provider(&self) -> Result<(Arc<dyn LlmProvider>, ProviderSettings), ApiError> {
+        let defaults = LlmConfig::default();
+        self.llm_provider_with_limits(defaults.timeout_secs, defaults.structured_output_max_tokens)
+            .await
+    }
+
+    async fn generation_llm_provider(
+        &self,
+    ) -> Result<(Arc<dyn LlmProvider>, ProviderSettings), ApiError> {
+        let timeout_secs = generation_provider_timeout_secs();
+        let structured_output_max_tokens = generation_output_max_tokens();
+        tracing::info!(
+            timeout_secs,
+            structured_output_max_tokens,
+            "creating case-generation provider"
+        );
+        self.llm_provider_with_limits(timeout_secs, structured_output_max_tokens)
+            .await
+    }
+
+    async fn llm_provider_with_limits(
+        &self,
+        timeout_secs: u64,
+        structured_output_max_tokens: u32,
+    ) -> Result<(Arc<dyn LlmProvider>, ProviderSettings), ApiError> {
         let settings = self
             .repo
             .load_provider_settings()
@@ -132,7 +234,9 @@ impl AppState {
             base_url: settings.base_url.clone(),
             model: settings.model.clone(),
             api_key,
-            ..LlmConfig::default()
+            timeout_secs,
+            max_retries: LlmConfig::default().max_retries,
+            structured_output_max_tokens,
         })
         .map_err(|error| ApiError::internal(error.to_string()))?;
         Ok((Arc::new(provider), settings))
@@ -172,6 +276,41 @@ impl AppState {
         .map_err(|error| tracing::warn!(%error, "image provider initialization failed"))
         .ok()
     }
+}
+
+fn generation_provider_timeout_secs() -> u64 {
+    parse_generation_provider_timeout(
+        std::env::var("NARRASTATE_GENERATION_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_generation_provider_timeout(value: Option<&str>) -> u64 {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| {
+            (MIN_GENERATION_PROVIDER_TIMEOUT_SECS..=MAX_GENERATION_PROVIDER_TIMEOUT_SECS)
+                .contains(value)
+        })
+        .unwrap_or(DEFAULT_GENERATION_PROVIDER_TIMEOUT_SECS)
+}
+
+fn generation_output_max_tokens() -> u32 {
+    parse_generation_output_max_tokens(
+        std::env::var("NARRASTATE_GENERATION_MAX_TOKENS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_generation_output_max_tokens(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| {
+            (MIN_GENERATION_OUTPUT_MAX_TOKENS..=MAX_GENERATION_OUTPUT_MAX_TOKENS).contains(value)
+        })
+        .unwrap_or(DEFAULT_GENERATION_OUTPUT_MAX_TOKENS)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -347,6 +486,35 @@ struct SaveImageProviderRequest {
     api_key: Option<String>,
     #[serde(default)]
     persist_api_key: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct CreateGenerationJobRequest {
+    #[serde(flatten)]
+    request: GenerationRequest,
+    #[serde(default)]
+    generate_visuals: bool,
+}
+
+impl<'de> Deserialize<'de> for CreateGenerationJobRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let generate_visuals = value
+            .as_object_mut()
+            .and_then(|object| object.remove("generate_visuals"))
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+            .unwrap_or(false);
+        let request = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            request,
+            generate_visuals,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -631,6 +799,7 @@ async fn test_provider(
         api_key,
         timeout_secs: 10,
         max_retries: 0,
+        structured_output_max_tokens: LlmConfig::default().structured_output_max_tokens,
     })
     .map_err(|error| ApiError::internal(error.to_string()))?;
     provider
@@ -754,12 +923,14 @@ fn persist_named_api_key(
 
 async fn create_generation_job(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<GenerationRequest>,
+    Json(payload): Json<CreateGenerationJobRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let job_id = GenerationJobId::new();
     let now = chrono::Utc::now().to_rfc3339();
     let request_json =
-        serde_json::to_string(&request).map_err(|error| ApiError::internal(error.to_string()))?;
+        serde_json::to_string(&payload).map_err(|error| ApiError::internal(error.to_string()))?;
+    let request = payload.request;
+    let generate_visuals = payload.generate_visuals;
     let pending = GenerationJobRecord {
         job_id,
         status: GenerationStatus::Pending,
@@ -783,8 +954,15 @@ async fn create_generation_job(
 
     let task_state = state.clone();
     tokio::spawn(async move {
-        if let Err(error) =
-            complete_generation_job(task_state.clone(), job_id, request, request_json, now).await
+        if let Err(error) = complete_generation_job(
+            task_state.clone(),
+            job_id,
+            request,
+            generate_visuals,
+            request_json,
+            now,
+        )
+        .await
         {
             tracing::error!(%job_id, detail = %error.detail, "generation background task failed");
             if let Err(storage_error) = fail_background_generation_job(
@@ -806,6 +984,7 @@ async fn complete_generation_job(
     state: Arc<AppState>,
     job_id: GenerationJobId,
     request: GenerationRequest,
+    generate_visuals: bool,
     request_json: String,
     now: String,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -831,7 +1010,7 @@ async fn complete_generation_job(
     let provider: Arc<dyn CaseGenerationProvider> = match override_provider {
         Some(provider) => provider,
         None => {
-            let (llm, _) = match state.llm_provider().await {
+            let (llm, _) = match state.generation_llm_provider().await {
                 Ok(provider) => provider,
                 Err(error) => {
                     let record = GenerationJobRecord {
@@ -857,7 +1036,11 @@ async fn complete_generation_job(
                     return Ok(Json(generation_job_json(&record)?));
                 }
             };
-            Arc::new(OpenAiCompatibleCaseGenerationProvider::new(llm))
+            Arc::new(
+                OpenAiCompatibleCaseGenerationProvider::new(llm).with_progress_reporter(Arc::new(
+                    JobGenerationProgressReporter::new(state.repo.clone(), job_id),
+                )),
+            )
         }
     };
     match run_generation_pipeline_with_id(
@@ -869,18 +1052,38 @@ async fn complete_generation_job(
     .await
     {
         Ok(success) => {
-            let visual_specs = default_visual_specs(&success.template, &request.setting);
-            let image_provider = state.image_provider().await;
-            let visuals = generate_optional_visuals(image_provider.as_deref(), &visual_specs).await;
+            let visuals = if generate_visuals {
+                JobGenerationProgressReporter::new(state.repo.clone(), job_id)
+                    .report(GenerationProgressUpdate {
+                        stage: GenerationProgressStage::GeneratingVisuals,
+                        completed: None,
+                        total: None,
+                    })
+                    .await
+                    .map_err(|error| ApiError::internal(error.to_string()))?;
+                let visual_specs = default_visual_specs(&success.template, &request.setting);
+                let image_provider = state.image_provider().await;
+                generate_optional_visuals(image_provider.as_deref(), &visual_specs).await
+            } else {
+                narrastate_case::VisualGenerationReport::default()
+            };
+            let status_events_json = merge_generation_events(
+                state.repo.as_ref(),
+                &job_id,
+                serde_json::to_value(&success.events)
+                    .map_err(|error| ApiError::internal(error.to_string()))?,
+            )
+            .await?;
             let report = serde_json::json!({
                 "generator_version": env!("CARGO_PKG_VERSION"),
+                "generation_strategy": "staged-v1",
                 "provider": "openai-compatible",
                 "generated_at": chrono::Utc::now().to_rfc3339(),
                 "request": request,
                 "attempts": success.drafts.len(),
                 "repairs": success.repairs,
                 "validation": success.validation,
-                "visuals": { "generated": visuals.outputs.len(), "warnings": visuals.warnings },
+                "visuals": { "requested": generate_visuals, "generated": visuals.outputs.len(), "warnings": visuals.warnings },
             });
             let manifest = CaseManifest {
                 id: success.template.id.clone(),
@@ -914,8 +1117,7 @@ async fn complete_generation_job(
                         request_json,
                         drafts_json: serde_json::to_string(&success.drafts)
                             .map_err(|e| ApiError::internal(e.to_string()))?,
-                        status_events_json: serde_json::to_string(&success.events)
-                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                        status_events_json: status_events_json.clone(),
                         validation_report_json: Some(report.to_string()),
                         result_path: None,
                         attempt_count: success.drafts.len() as u32,
@@ -950,8 +1152,7 @@ async fn complete_generation_job(
                 request_json,
                 drafts_json: serde_json::to_string(&success.drafts)
                     .map_err(|error| ApiError::internal(error.to_string()))?,
-                status_events_json: serde_json::to_string(&success.events)
-                    .map_err(|error| ApiError::internal(error.to_string()))?,
+                status_events_json,
                 validation_report_json: Some(report.to_string()),
                 result_path: Some(installed.root.to_string_lossy().into_owned()),
                 attempt_count: success.drafts.len() as u32,
@@ -969,14 +1170,20 @@ async fn complete_generation_job(
             Ok(Json(generation_job_json(&record)?))
         }
         Err(failure) => {
+            let status_events_json = merge_generation_events(
+                state.repo.as_ref(),
+                &job_id,
+                serde_json::to_value(&failure.events)
+                    .map_err(|error| ApiError::internal(error.to_string()))?,
+            )
+            .await?;
             let record = GenerationJobRecord {
                 job_id,
                 status: GenerationStatus::Failed,
                 request_json,
                 drafts_json: serde_json::to_string(&failure.drafts)
                     .map_err(|e| ApiError::internal(e.to_string()))?,
-                status_events_json: serde_json::to_string(&failure.events)
-                    .map_err(|e| ApiError::internal(e.to_string()))?,
+                status_events_json,
                 validation_report_json: Some(
                     serde_json::json!({"issues": failure.issues}).to_string(),
                 ),
@@ -996,6 +1203,31 @@ async fn complete_generation_job(
             Ok(Json(generation_job_json(&record)?))
         }
     }
+}
+
+async fn merge_generation_events(
+    repo: &dyn Repository,
+    job_id: &GenerationJobId,
+    pipeline_events: serde_json::Value,
+) -> Result<String, ApiError> {
+    let record = repo
+        .load_generation_job(job_id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    let mut events = serde_json::from_str::<Vec<serde_json::Value>>(&record.status_events_json)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let pipeline_events = pipeline_events
+        .as_array()
+        .ok_or_else(|| ApiError::internal("generation pipeline events must be an array"))?;
+    for event in pipeline_events {
+        if event.get("to").and_then(serde_json::Value::as_str) == Some("drafting") {
+            continue;
+        }
+        let mut event = event.clone();
+        event["sequence"] = serde_json::json!(events.len());
+        events.push(event);
+    }
+    serde_json::to_string(&events).map_err(|error| ApiError::internal(error.to_string()))
 }
 
 async fn fail_background_generation_job(
@@ -1848,6 +2080,7 @@ async fn execute_action(
     let recent = session
         .conversation
         .iter()
+        .filter(|entry| entry.target_character_id.as_ref() == Some(&character.id))
         .map(|entry| {
             let speaker = match &entry.speaker {
                 DialogueSpeaker::Player => "玩家".to_string(),
@@ -1861,7 +2094,6 @@ async fn execute_action(
             };
             (speaker, entry.text.clone())
         })
-        .chain(std::iter::once(("Player".into(), request.text.clone())))
         .collect::<Vec<_>>();
     let utterance = match session.mode {
         SessionMode::Mock => state.mock_renderer.render(&plan).utterance,
@@ -1872,6 +2104,7 @@ async fn execute_action(
                     locale: &case.locale,
                     facts: &case.facts,
                     recent_dialogue: &recent,
+                    latest_player_message: &request.text,
                 };
                 let (output, status, usage) = LlmRenderer::new(provider)
                     .render_validated_with_usage(&plan, character, &renderer_context)
@@ -1921,12 +2154,14 @@ async fn execute_action(
     session.current_turn = session.current_turn.saturating_add(1);
     session.conversation.push(DialogueEntry {
         turn_id,
+        target_character_id: Some(character.id.clone()),
         speaker: DialogueSpeaker::Player,
         text: request.text.clone(),
         attached_evidence: request.attached_evidence_ids.clone(),
     });
     session.conversation.push(DialogueEntry {
         turn_id,
+        target_character_id: Some(character.id.clone()),
         speaker: DialogueSpeaker::Character(character.id.clone()),
         text: utterance.clone(),
         attached_evidence: Vec::new(),
@@ -1991,15 +2226,18 @@ async fn commit_visual_asset_question(
 ) -> Result<PublicTurnResult, ApiError> {
     let turn_id = TurnId::new();
     let utterance = narrastate_runtime::VISUAL_ASSET_DISCLAIMER.to_string();
+    session.active_character = Some(request.target_character_id.clone());
     session.current_turn = session.current_turn.saturating_add(1);
     session.conversation.push(DialogueEntry {
         turn_id,
+        target_character_id: Some(request.target_character_id.clone()),
         speaker: DialogueSpeaker::Player,
         text: request.text.clone(),
         attached_evidence: request.attached_evidence_ids.clone(),
     });
     session.conversation.push(DialogueEntry {
         turn_id,
+        target_character_id: Some(request.target_character_id.clone()),
         speaker: DialogueSpeaker::System,
         text: utterance.clone(),
         attached_evidence: Vec::new(),
@@ -2409,6 +2647,7 @@ fn provider_error_code(error: &ProviderError) -> &'static str {
         ProviderError::Timeout => "timeout",
         ProviderError::Network(_) => "network",
         ProviderError::InvalidResponse(_) => "invalid_response",
+        ProviderError::OutputTruncated => "output_truncated",
         ProviderError::ContextTooLong => "context_too_long",
         ProviderError::SafetyRejected => "safety_rejected",
         ProviderError::Unknown(_) => "unknown",
@@ -2536,6 +2775,76 @@ mod tests {
     use super::*;
     use narrastate_case::load_case_package;
     use narrastate_storage::SqliteRepository;
+
+    #[test]
+    fn generation_provider_uses_a_long_but_bounded_timeout() {
+        assert_eq!(parse_generation_provider_timeout(None), 180);
+        assert_eq!(parse_generation_provider_timeout(Some("300")), 300);
+        assert_eq!(parse_generation_provider_timeout(Some("29")), 180);
+        assert_eq!(parse_generation_provider_timeout(Some("901")), 180);
+        assert_eq!(parse_generation_provider_timeout(Some("invalid")), 180);
+        assert_eq!(parse_generation_output_max_tokens(None), 65_536);
+        assert_eq!(parse_generation_output_max_tokens(Some("16384")), 16_384);
+        assert_eq!(parse_generation_output_max_tokens(Some("2048")), 65_536);
+        assert_eq!(parse_generation_output_max_tokens(Some("65536")), 65_536);
+        assert_eq!(parse_generation_output_max_tokens(Some("65537")), 65_536);
+    }
+
+    #[tokio::test]
+    async fn staged_generation_progress_is_persisted_for_job_polling() {
+        let repository = Arc::new(SqliteRepository::new_in_memory().await.unwrap());
+        let job_id = GenerationJobId::new();
+        let now = chrono::Utc::now().to_rfc3339();
+        repository
+            .save_generation_job(&GenerationJobRecord {
+                job_id,
+                status: GenerationStatus::Drafting,
+                request_json: "{}".into(),
+                drafts_json: "[]".into(),
+                status_events_json: serde_json::json!([{
+                    "sequence": 0,
+                    "from": "pending",
+                    "to": "drafting"
+                }])
+                .to_string(),
+                validation_report_json: None,
+                result_path: None,
+                attempt_count: 0,
+                repair_count: 0,
+                error_code: None,
+                error_message: None,
+                created_at: now.clone(),
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        let reporter = JobGenerationProgressReporter::new(repository.clone(), job_id);
+
+        reporter
+            .report(GenerationProgressUpdate {
+                stage: GenerationProgressStage::Blueprint,
+                completed: None,
+                total: None,
+            })
+            .await
+            .unwrap();
+        reporter
+            .report(GenerationProgressUpdate {
+                stage: GenerationProgressStage::Variants,
+                completed: Some(2),
+                total: Some(3),
+            })
+            .await
+            .unwrap();
+
+        let stored = repository.load_generation_job(&job_id).await.unwrap();
+        let events: serde_json::Value = serde_json::from_str(&stored.status_events_json).unwrap();
+        assert_eq!(events.as_array().unwrap().len(), 2);
+        assert_eq!(events[0]["stage"], "blueprint");
+        assert_eq!(events[1]["stage"], "variants");
+        assert_eq!(events[1]["completed"], 2);
+        assert_eq!(events[1]["total"], 3);
+    }
 
     async fn fixture() -> (Arc<AppState>, SessionState, CaseDefinition) {
         let case: CaseDefinition =
@@ -2948,7 +3257,7 @@ mod tests {
             State(state.clone()),
             Json(CreateGameRequest {
                 case_id: CaseId::from("rain-gallery-variants"),
-                case_version: Some("1.0.0".into()),
+                case_version: Some("1.0.1".into()),
                 variant_selection: VariantSelectionRequest::Default,
                 seed: Some(42),
                 mode: SessionMode::Mock,
@@ -3098,7 +3407,7 @@ mod tests {
         assert_eq!(response.variant_count, 3);
         assert_eq!(state.repo.list_installed_cases().await.unwrap().len(), 1);
         assert!(install_root
-            .join("rain-gallery-variants/1.0.0/manifest.json")
+            .join("rain-gallery-variants/1.0.1/manifest.json")
             .is_file());
         let json = serde_json::to_string(&response).unwrap();
         assert!(!json.contains("responsible_character"));
@@ -3132,10 +3441,16 @@ mod tests {
             narrastate_runtime::mock::MockCaseGenerationProvider::new(vec![Ok(draft)]),
         ));
 
-        let pending = create_generation_job(State(state.clone()), Json(request))
-            .await
-            .unwrap()
-            .0;
+        let pending = create_generation_job(
+            State(state.clone()),
+            Json(CreateGenerationJobRequest {
+                request,
+                generate_visuals: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
         assert_eq!(pending["status"], "pending");
         let id = GenerationJobId(Uuid::parse_str(pending["job_id"].as_str().unwrap()).unwrap());
         let response = loop {
@@ -3153,7 +3468,7 @@ mod tests {
         let stored = state.repo.load_generation_job(&id).await.unwrap();
         assert_eq!(stored.status, GenerationStatus::Completed);
         assert!(stored.validation_report_json.is_some());
-        assert!(root.join("rain-gallery-variants/1.0.0/case.json").is_file());
+        assert!(root.join("rain-gallery-variants/1.0.1/case.json").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -3179,10 +3494,16 @@ mod tests {
             content_constraints: vec![],
             language: "zh-CN".into(),
         };
-        let pending = create_generation_job(State(state.clone()), Json(request))
-            .await
-            .unwrap()
-            .0;
+        let pending = create_generation_job(
+            State(state.clone()),
+            Json(CreateGenerationJobRequest {
+                request,
+                generate_visuals: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
         let id = GenerationJobId(Uuid::parse_str(pending["job_id"].as_str().unwrap()).unwrap());
         let failed = loop {
             let record = state.repo.load_generation_job(&id).await.unwrap();

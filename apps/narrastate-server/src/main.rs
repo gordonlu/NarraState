@@ -108,7 +108,17 @@ async fn cmd_case(args: &[String]) {
                     model: std::env::var("NARRASTATE_MODEL")
                         .unwrap_or_else(|_| "gpt-4o-mini".into()),
                     api_key,
-                    ..LlmConfig::default()
+                    timeout_secs: std::env::var("NARRASTATE_GENERATION_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .filter(|value| (30..=900).contains(value))
+                        .unwrap_or(180),
+                    structured_output_max_tokens: std::env::var("NARRASTATE_GENERATION_MAX_TOKENS")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .filter(|value| (4_096..=65_536).contains(value))
+                        .unwrap_or(65_536),
+                    max_retries: LlmConfig::default().max_retries,
                 })
                 .unwrap_or_else(|e| {
                     eprintln!("GENERATION_PROVIDER_INVALID at $: {e}");

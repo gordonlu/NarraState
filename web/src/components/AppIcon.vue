@@ -10,6 +10,7 @@ defineProps<{
     | 'menu'
     | 'paperclip'
     | 'people'
+    | 'plus'
     | 'search'
     | 'send'
     | 'timeline'
@@ -65,6 +66,9 @@ defineProps<{
     <template v-else-if="name === 'people'">
       <circle cx="12" cy="8" r="4" />
       <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+    </template>
+    <template v-else-if="name === 'plus'">
+      <path d="M12 5v14M5 12h14" />
     </template>
     <template v-else-if="name === 'search'">
       <circle cx="11" cy="11" r="7" />

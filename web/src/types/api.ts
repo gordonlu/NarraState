@@ -79,6 +79,7 @@ export type DialogueSpeaker = 'Player' | 'System' | { Character: string }
 
 export interface DialogueEntry {
   turn_id: string
+  target_character_id?: string
   speaker: DialogueSpeaker
   text: string
   attached_evidence: string[]
@@ -121,10 +122,17 @@ export interface GenerationRequest {
   confession_policy: string; content_constraints: string[]; language: string
 }
 
+export interface CreateGenerationJobRequest extends GenerationRequest {
+  generate_visuals: boolean
+}
+
 export interface GenerationJob {
   job_id: string; status: string; attempt_count: number; repair_count: number
   error_code?: string; error_message?: string; result_path?: string
-  events: Array<{ sequence: number; to: string; error_code?: string }>; updated_at: string
+  events: Array<{
+    sequence: number; to: string; error_code?: string; stage?: string
+    completed?: number; total?: number
+  }>; updated_at: string
 }
 export interface CreateGameResponse { session_id: string; instance_id: string; case_id: string; case_version: string; seed: number }
 

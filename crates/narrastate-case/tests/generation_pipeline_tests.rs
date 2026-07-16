@@ -87,6 +87,12 @@ async fn provider_timeout_and_empty_response_queue_are_explicit() {
         .unwrap_err();
     assert_eq!(failure.code, "GENERATION_PROVIDER_TIMEOUT");
 
+    let truncated = MockCaseGenerationProvider::new(vec![Err(ProviderError::OutputTruncated)]);
+    let failure = run_generation_pipeline(&truncated, request(), GenerationLimits::default())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "GENERATION_PROVIDER_OUTPUT_TRUNCATED");
+
     let empty = MockCaseGenerationProvider::new(vec![]);
     let failure = run_generation_pipeline(&empty, request(), GenerationLimits::default())
         .await

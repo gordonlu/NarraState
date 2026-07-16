@@ -20,6 +20,8 @@ pub enum ProviderError {
     Network(String),
     #[error("Invalid response from model: {0}")]
     InvalidResponse(String),
+    #[error("Model output was truncated before the structured response completed")]
+    OutputTruncated,
     #[error("Context window exceeded")]
     ContextTooLong,
     #[error("Content was rejected by safety filters")]
@@ -35,6 +37,7 @@ pub struct LlmConfig {
     pub api_key: String,
     pub timeout_secs: u64,
     pub max_retries: u32,
+    pub structured_output_max_tokens: u32,
 }
 
 impl Default for LlmConfig {
@@ -45,6 +48,7 @@ impl Default for LlmConfig {
             api_key: String::new(),
             timeout_secs: 30,
             max_retries: 1,
+            structured_output_max_tokens: 4_096,
         }
     }
 }
@@ -137,6 +141,31 @@ pub trait CaseGenerationProvider: Send + Sync {
         &self,
         request: &GenerationRepairRequest,
     ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError>;
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationProgressStage {
+    Blueprint,
+    SharedContent,
+    Variants,
+    Assembling,
+    RepairingShared,
+    RepairingVariants,
+    RepairingFull,
+    GeneratingVisuals,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerationProgressUpdate {
+    pub stage: GenerationProgressStage,
+    pub completed: Option<u32>,
+    pub total: Option<u32>,
+}
+
+#[async_trait]
+pub trait GenerationProgressReporter: Send + Sync {
+    async fn report(&self, update: GenerationProgressUpdate) -> Result<(), ProviderError>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

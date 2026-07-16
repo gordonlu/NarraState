@@ -16,6 +16,7 @@ export interface HomePageContent {
   navigation: {
     mechanism: string
     cases: string
+    generate: string
     openSource: string
     docs: string
     settings: string
@@ -54,6 +55,7 @@ export const homePageContent: HomePageContent = {
   navigation: {
     mechanism: '核心机制',
     cases: '案件',
+    generate: '生成案件',
     openSource: '开源',
     docs: '文档',
     settings: '设置',
