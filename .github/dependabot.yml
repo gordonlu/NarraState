@@ -6,8 +6,9 @@ updates:
       interval: weekly
       day: monday
     groups:
-      rust-dependencies:
+      rust-minor-and-patch:
         patterns: ['*']
+        update-types: [minor, patch]
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm
@@ -16,8 +17,9 @@ updates:
       interval: weekly
       day: monday
     groups:
-      web-dependencies:
+      web-minor-and-patch:
         patterns: ['*']
+        update-types: [minor, patch]
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
@@ -26,6 +28,7 @@ updates:
       interval: weekly
       day: monday
     groups:
-      github-actions:
+      github-actions-minor-and-patch:
         patterns: ['*']
+        update-types: [minor, patch]
     open-pull-requests-limit: 5
