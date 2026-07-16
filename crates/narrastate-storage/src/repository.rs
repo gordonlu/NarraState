@@ -416,7 +416,7 @@ impl Repository for SqliteRepository {
 
     async fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError> {
         let values: Vec<String> =
-            sqlx::query_scalar("SELECT definition_json FROM cases ORDER BY loaded_at DESC")
+            sqlx::query_scalar("SELECT definition_json FROM cases ORDER BY case_id")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(map_database)?;

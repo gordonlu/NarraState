@@ -104,6 +104,27 @@ async fn repository_with_session() -> (SqliteRepository, SessionState) {
 }
 
 #[tokio::test]
+async fn case_list_order_is_stable_across_load_order() {
+    let repo = SqliteRepository::new_in_memory().await.expect("repository");
+    let mut later = load_case();
+    later.id = "z-case".into();
+    let mut earlier = load_case();
+    earlier.id = "a-case".into();
+
+    repo.save_case(&later).await.expect("save later case");
+    repo.save_case(&earlier).await.expect("save earlier case");
+
+    let ids: Vec<_> = repo
+        .list_cases()
+        .await
+        .expect("list cases")
+        .into_iter()
+        .map(|case| case.id)
+        .collect();
+    assert_eq!(ids, vec!["a-case".into(), "z-case".into()]);
+}
+
+#[tokio::test]
 async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
     let (repo, state) = repository_with_session().await;
     let loaded = repo.load_session(&state.session_id).await.expect("session");
