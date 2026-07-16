@@ -162,10 +162,13 @@
       "type": "string",
       "enum": [
         "Identity",
+        "Access",
         "Opportunity",
         "Means",
         "Action",
+        "Motive",
         "Intent",
+        "Causation",
         "Concealment"
       ]
     },

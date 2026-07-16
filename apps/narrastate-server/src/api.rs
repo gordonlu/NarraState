@@ -1279,26 +1279,15 @@ async fn create_game(
     State(state): State<Arc<AppState>>,
     Json(request): Json<CreateGameRequest>,
 ) -> Result<Json<CreateGameResponse>, ApiError> {
-    let installed = state
-        .repo
-        .list_installed_cases()
-        .await
-        .map_err(ApiError::from_storage)?;
-    let record = select_installed_case(
-        &installed,
-        &request.case_id,
-        request.case_version.as_deref(),
-    )
-    .ok_or_else(|| ApiError::not_found(format!("installed case {}", request.case_id)))?;
-    let package = load_case_package(&record.source_path)
-        .map_err(|error| ApiError::validation(error.to_string()))?;
-    if package.template_content_hash.as_ref() != record.template_content_hash {
-        return Err(ApiError::internal(format!(
-            "installed case {} {} content hash differs from its index",
-            record.case_id, record.case_version
-        )));
-    }
-    let selection = match request.variant_selection {
+    let CreateGameRequest {
+        case_id,
+        case_version,
+        variant_selection,
+        seed,
+        mode,
+        target_character_id,
+    } = request;
+    let selection = match variant_selection {
         VariantSelectionRequest::Default => VariantSelection::Default,
         VariantSelectionRequest::Random => VariantSelection::Random,
         VariantSelectionRequest::Specific { variant_id } => {
@@ -1310,34 +1299,83 @@ async fn create_game(
             VariantSelection::Specific(variant_id)
         }
     };
-    let seed = Seed(request.seed.unwrap_or_else(random_seed));
-    let candidates: Vec<_> = package
-        .template
-        .solution_variants
-        .iter()
-        .filter(|variant| variant.enabled)
-        .filter(|variant| {
-            package
-                .validation
-                .variant_reports
-                .iter()
-                .any(|report| report.variant_id == variant.id && report.valid)
-        })
-        .map(|variant| VariantCandidate {
-            id: variant.id.clone(),
-            weight: variant.weight,
-        })
-        .collect();
-    let variant_id = select_variant(
-        &package.template.id,
-        &package.template.version,
-        &package.template.default_variant_id,
-        &selection,
-        seed,
-        &candidates,
-    )
-    .map_err(|error| ApiError::validation(error.to_string()))?;
-    let compiled = compile(&package.template, &variant_id).map_err(|report| {
+    let seed = Seed(seed.unwrap_or_else(random_seed));
+    let installed = state
+        .repo
+        .list_installed_cases()
+        .await
+        .map_err(ApiError::from_storage)?;
+    let compiled = if let Some(record) =
+        select_installed_case(&installed, &case_id, case_version.as_deref())
+    {
+        let package = load_case_package(&record.source_path)
+            .map_err(|error| ApiError::validation(error.to_string()))?;
+        if package.template_content_hash.as_ref() != record.template_content_hash {
+            return Err(ApiError::internal(format!(
+                "installed case {} {} content hash differs from its index",
+                record.case_id, record.case_version
+            )));
+        }
+        let candidates: Vec<_> = package
+            .template
+            .solution_variants
+            .iter()
+            .filter(|variant| variant.enabled)
+            .filter(|variant| {
+                package
+                    .validation
+                    .variant_reports
+                    .iter()
+                    .any(|report| report.variant_id == variant.id && report.valid)
+            })
+            .map(|variant| VariantCandidate {
+                id: variant.id.clone(),
+                weight: variant.weight,
+            })
+            .collect();
+        let variant_id = select_variant(
+            &package.template.id,
+            &package.template.version,
+            &package.template.default_variant_id,
+            &selection,
+            seed,
+            &candidates,
+        )
+        .map_err(|error| ApiError::validation(error.to_string()))?;
+        compile(&package.template, &variant_id)
+    } else {
+        if case_version
+            .as_deref()
+            .is_some_and(|version| version != "0.1.0")
+        {
+            return Err(ApiError::not_found(format!(
+                "installed case {case_id} version {}",
+                case_version.as_deref().unwrap_or_default()
+            )));
+        }
+        let legacy = state
+            .repo
+            .load_case(&case_id)
+            .await
+            .map_err(ApiError::from_storage)?;
+        let template = adapt_v01(legacy, "0.1.0", VariantId::from("classic"))
+            .map_err(|error| ApiError::validation(error.to_string()))?;
+        let candidates = vec![VariantCandidate {
+            id: template.default_variant_id.clone(),
+            weight: 1,
+        }];
+        let variant_id = select_variant(
+            &template.id,
+            &template.version,
+            &template.default_variant_id,
+            &selection,
+            seed,
+            &candidates,
+        )
+        .map_err(|error| ApiError::validation(error.to_string()))?;
+        compile(&template, &variant_id)
+    }
+    .map_err(|report| {
         ApiError::validation(
             report
                 .errors
@@ -1355,8 +1393,8 @@ async fn create_game(
         .map_err(ApiError::from_storage)?;
     let session = new_session(
         &instance.compiled_case.definition,
-        request.mode,
-        request.target_character_id,
+        mode,
+        target_character_id,
         Some(instance.instance_id),
     )?;
     persist_new_session(&*state.repo, &session).await?;
@@ -2588,6 +2626,37 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_game_adapts_legacy_case_and_freezes_single_variant() {
+        let (state, _, _) = fixture().await;
+        let response = create_game(
+            State(state.clone()),
+            Json(CreateGameRequest {
+                case_id: CaseId::from("rain-gallery"),
+                case_version: None,
+                variant_selection: VariantSelectionRequest::Default,
+                seed: Some(7),
+                mode: SessionMode::Mock,
+                target_character_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.case_version, "0.1.0");
+        assert_eq!(response.seed, 7);
+        let session = state.repo.load_session(&response.session_id).await.unwrap();
+        assert_eq!(session.instance_id, Some(response.instance_id));
+        let instance = state
+            .repo
+            .load_case_instance(&response.instance_id)
+            .await
+            .unwrap();
+        assert_eq!(instance.case_id, CaseId::from("rain-gallery"));
+        assert_eq!(instance.variant_id, VariantId::from("classic"));
     }
 
     #[tokio::test]
