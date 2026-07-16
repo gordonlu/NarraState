@@ -22,7 +22,10 @@ jobs:
         with:
           components: llvm-tools-preview
       - run: cargo install cargo-llvm-cov --locked
-      - run: cargo llvm-cov --workspace --lcov --output-path coverage/rust.lcov
+      - name: Run Rust coverage
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --workspace --lcov --output-path coverage/rust.lcov
 
       - name: Generate Web coverage
         uses: actions/setup-node@v4
