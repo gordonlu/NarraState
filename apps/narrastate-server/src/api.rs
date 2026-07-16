@@ -2586,6 +2586,17 @@ mod tests {
         Arc::new(AppState::new(repository))
     }
 
+    async fn isolated_config_fixture() -> (Arc<AppState>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("narrastate-config-{}", Uuid::new_v4()));
+        let repository = Arc::new(SqliteRepository::new_in_memory().await.unwrap());
+        let mut state = AppState::new(repository);
+        state.provider_env_path = root.join("provider.env");
+        state.image_provider_env_path = root.join("image-provider.env");
+        state.ephemeral_api_key = RwLock::new(None);
+        state.ephemeral_image_api_key = RwLock::new(None);
+        (Arc::new(state), root)
+    }
+
     fn action(
         revision: u64,
         client_action_id: ClientActionId,
@@ -2626,6 +2637,277 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn named_key_files_handle_missing_noise_and_unsafe_values() {
+        let root = std::env::temp_dir().join(format!("narrastate-key-parser-{}", Uuid::new_v4()));
+        let path = root.join("keys.env");
+        assert_eq!(load_named_api_key(&path, "TARGET_KEY").unwrap(), None);
+
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            "# comment\nMALFORMED\nOTHER_KEY=ignored\nTARGET_KEY = secret-value \n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_named_api_key(&path, "TARGET_KEY").unwrap(),
+            Some("secret-value".into())
+        );
+        assert_eq!(load_named_api_key(&path, "MISSING_KEY").unwrap(), None);
+
+        let error = persist_named_api_key(&path, "TARGET_KEY", "unsafe\nvalue").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_configuration_persists_and_public_response_is_redacted() {
+        let (state, root) = isolated_config_fixture().await;
+        let initial = public_config(State(state.clone())).await.unwrap().0;
+        assert!(!initial.configured);
+        assert_eq!(initial.api_key, "");
+
+        let invalid = save_provider_config(
+            State(state.clone()),
+            Json(TestProviderRequest {
+                base_url: " ".into(),
+                model: "model".into(),
+                api_key: None,
+                persist_api_key: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let _ = save_provider_config(
+            State(state.clone()),
+            Json(TestProviderRequest {
+                base_url: "https://provider.example/v1".into(),
+                model: "text-model".into(),
+                api_key: Some("sk-local-test".into()),
+                persist_api_key: true,
+            }),
+        )
+        .await
+        .unwrap();
+        let public = public_config(State(state.clone())).await.unwrap().0;
+        assert!(public.configured);
+        assert!(public.key_persisted);
+        assert_eq!(public.api_key, "********");
+        assert_eq!(public.model, "text-model");
+        assert_eq!(
+            load_provider_api_key(&state.provider_env_path).unwrap(),
+            Some("sk-local-test".into())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn image_provider_configuration_is_independent_and_validated() {
+        let (state, root) = isolated_config_fixture().await;
+        let invalid = save_image_provider_config(
+            State(state.clone()),
+            Json(SaveImageProviderRequest {
+                enabled: true,
+                base_url: String::new(),
+                model: String::new(),
+                api_key: None,
+                persist_api_key: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let _ = save_image_provider_config(
+            State(state.clone()),
+            Json(SaveImageProviderRequest {
+                enabled: true,
+                base_url: "https://images.example/v1".into(),
+                model: "image-model".into(),
+                api_key: Some("image-key".into()),
+                persist_api_key: true,
+            }),
+        )
+        .await
+        .unwrap();
+        let public = public_config(State(state.clone())).await.unwrap().0;
+        assert!(public.image_provider.enabled);
+        assert!(public.image_provider.configured);
+        assert!(public.image_provider.key_persisted);
+        assert_eq!(public.image_provider.model, "image-model");
+        assert_eq!(public.api_key, "");
+        assert!(state.image_provider().await.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn health_and_problem_details_follow_http_contract() {
+        let response = health().await.0;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.version, "0.1.0");
+
+        let mappings = [
+            (
+                StorageError::NotFound("missing".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                StorageError::RevisionConflict {
+                    expected: 2,
+                    actual: 3,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                StorageError::Constraint("invalid".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                StorageError::Database("offline".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (storage_error, expected) in mappings {
+            let response = ApiError::from_storage(storage_error).into_response();
+            assert_eq!(response.status(), expected);
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "application/problem+json"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_lookup_rejects_bad_ids_and_unavailable_reports() {
+        let (state, _, _) = fixture().await;
+        let invalid = get_generation_job(State(state.clone()), Path("not-a-uuid".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let id = GenerationJobId::new();
+        let record = GenerationJobRecord {
+            job_id: id,
+            status: GenerationStatus::Pending,
+            request_json: "{}".into(),
+            drafts_json: "[]".into(),
+            status_events_json: "[]".into(),
+            validation_report_json: None,
+            result_path: None,
+            attempt_count: 0,
+            repair_count: 0,
+            error_code: None,
+            error_message: None,
+            created_at: "2026-07-16T00:00:00Z".into(),
+            updated_at: "2026-07-16T00:00:00Z".into(),
+        };
+        state.repo.save_generation_job(&record).await.unwrap();
+        let public = get_generation_job(State(state.clone()), Path(id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(public["status"], "pending");
+        assert!(public.get("drafts").is_none());
+
+        let missing = get_generation_report(State(state.clone()), Path(id.to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+        let mut malformed = record;
+        malformed.validation_report_json = Some("not-json".into());
+        state.repo.save_generation_job(&malformed).await.unwrap();
+        let error = get_generation_report(State(state), Path(id.to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn public_case_and_session_read_endpoints_cover_valid_and_invalid_paths() {
+        let (state, session, case) = fixture().await;
+        let listed = list_cases(State(state.clone())).await.unwrap().0;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, case.id);
+        assert_eq!(listed[0].character_count, case.characters.len());
+
+        let detail = get_case(State(state.clone()), Path(case.id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(detail.id, case.id);
+        assert_eq!(detail.characters.len(), case.characters.len());
+
+        let session_id = session.session_id.to_string();
+        let public_session = get_session(State(state.clone()), Path(session_id.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(public_session.session_id, session.session_id);
+        let events = get_session_events(State(state.clone()), Path(session_id.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(events.len(), 1);
+        let debug = get_session_debug(State(state.clone()), Path(session_id))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(debug.events.len(), 1);
+
+        let invalid = get_session(State(state), Path("bad-session-id".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(invalid.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn case_validation_and_version_selection_are_deterministic() {
+        let case: CaseDefinition =
+            serde_json::from_str(include_str!("../../../cases/rain-gallery/case.json")).unwrap();
+        assert_eq!(validate_case(Json(case.clone())).await.0["valid"], true);
+        let mut invalid = case;
+        invalid.characters.push(invalid.characters[0].clone());
+        let report = validate_case(Json(invalid)).await.0;
+        assert_eq!(report["valid"], false);
+        assert!(!report["errors"].as_array().unwrap().is_empty());
+
+        let case_id = CaseId::from("case");
+        let records = vec![
+            InstalledCaseRecord {
+                case_id: case_id.clone(),
+                case_version: "1.9.0".into(),
+                source_path: "old".into(),
+                schema_version: "0.2".into(),
+                template_content_hash: "old".into(),
+            },
+            InstalledCaseRecord {
+                case_id: case_id.clone(),
+                case_version: "2.0.0".into(),
+                source_path: "new".into(),
+                schema_version: "0.2".into(),
+                template_content_hash: "new".into(),
+            },
+        ];
+        assert_eq!(
+            select_installed_case(&records, &case_id, None)
+                .unwrap()
+                .case_version,
+            "2.0.0"
+        );
+        assert_eq!(
+            select_installed_case(&records, &case_id, Some("1.9.0"))
+                .unwrap()
+                .source_path,
+            "old"
+        );
+        assert!(select_installed_case(&records, &CaseId::from("missing"), None).is_none());
+        assert_eq!(version_key("broken.2"), (0, 2, 0));
+        let _generated_seed = random_seed();
     }
 
     #[tokio::test]
