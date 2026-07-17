@@ -546,23 +546,15 @@
           }
         },
         {
-          "type": [
-            "object",
-            "string"
-          ],
-          "enum": [
-            "Calm",
-            "Guarded",
-            "Defensive",
-            "Pressured",
-            "Cornered",
-            "ConfessionEligible",
-            "Resolved"
-          ],
+          "type": "object",
           "required": [
+            "phase",
             "type"
           ],
           "properties": {
+            "phase": {
+              "$ref": "#/definitions/InterrogationPhase"
+            },
             "type": {
               "type": "string",
               "enum": [
@@ -572,15 +564,15 @@
           }
         },
         {
-          "description": "Author-provided stable evidence identifier.",
-          "type": [
-            "object",
-            "string"
-          ],
+          "type": "object",
           "required": [
+            "evidence_id",
             "type"
           ],
           "properties": {
+            "evidence_id": {
+              "$ref": "#/definitions/EvidenceId"
+            },
             "type": {
               "type": "string",
               "enum": [

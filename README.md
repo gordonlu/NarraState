@@ -3,10 +3,24 @@
 [![CI](https://github.com/gordonlu/NarraState/actions/workflows/ci.yml/badge.svg)](https://github.com/gordonlu/NarraState/actions/workflows/ci.yml)
 [![Security](https://github.com/gordonlu/NarraState/actions/workflows/security.yml/badge.svg)](https://github.com/gordonlu/NarraState/actions/workflows/security.yml)
 [![codecov](https://codecov.io/gh/gordonlu/NarraState/graph/badge.svg)](https://codecov.io/gh/gordonlu/NarraState)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Vue.js](https://img.shields.io/badge/Vue.js-3-42b883?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-local-003b57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![License](https://img.shields.io/badge/License-MIT-e95438.svg)](LICENSE)
 
-NarraState 是一个状态驱动的 AI 互动叙事运行时。Rust 决定事实、证据影响、角色阶段、披露与结案；LLM 只负责把受约束的行动解释和对话计划渲染成自然语言。
+![谜局AI 首页：真相不会改变，人会](docs/assets/narrastate-home.webp)
 
-v0.1 提供一个可完整通关的中文侦探审讯 Demo、OpenAI-compatible 模型接入、本地 SQLite 持久化、REST/SSE API，以及 Vue 3 调查工作台。没有模型配置时可直接使用 Mock 模式体验完整状态机。
+NarraState（中文名“谜局AI”）是一个状态驱动的 AI 互动推理游戏。每次新游戏会从已经编译、校验并模拟通过的真相变体中选择一个，随后将本局世界完整冻结。玩家的提问、证据和选择可以改变角色的压力、信任、认知与披露阶段，但不能让模型临时改写真相。
+
+项目目前包含分阶段 AI 案件生成、多真相变体、确定性编译与通关模拟、冻结案件实例、SQLite 存档恢复、OpenAI-compatible 文本与图片服务、非证据性视觉资产，以及 Vue 3 调查工作台。没有配置模型时，也可以使用 Mock 模式离线体验完整状态机。
+
+## 核心特点
+
+- **开局即冻结真相**：运行时始终使用数据库中的不可变案件实例，案件文件更新不会改写旧存档。
+- **人物会变，事实不变**：角色通过 DisclosureGraph 从否认、解释到逐步披露，不由模型或矛盾次数直接决定认罪。
+- **生成后必须验证**：AI 输出只是草案，只有经过 Rust 规范化、编译、语义校验和每个真相变体的确定性模拟后才能安装。
+- **文本与图片模型独立**：两类 OpenAI-compatible Provider 分别配置；图片仅用于封面、场景和头像，不参与证据或结案计算。
 
 ## 快速开始
 
