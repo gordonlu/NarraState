@@ -1,7 +1,7 @@
 use narrastate_case::{compile, freeze_case};
 use narrastate_core::{
-    CaseDefinition, CaseTemplate, CharacterId, Ending, FactId, Seed, SolutionVariant,
-    VariantAdditions, VariantId,
+    CaseDefinition, CaseTemplate, CharacterId, DisclosureKind, Ending, FactId, Seed,
+    SolutionVariant, VariantAdditions, VariantId,
 };
 use std::collections::BTreeMap;
 
@@ -112,6 +112,24 @@ fn rejects_responsible_character_without_matching_confession_graph() {
 
     let result = compile(&template, &VariantId::from("classic"));
     assert!(has_code(&result, "COMPILE_RESPONSIBILITY_GRAPH_MISMATCH"));
+}
+
+#[test]
+fn allows_evidence_only_variant_without_a_confession_node() {
+    let mut template = template();
+    let responsible = template.solution_variants[0]
+        .responsible_character_id
+        .clone();
+    template
+        .shared_characters
+        .iter_mut()
+        .find(|character| character.id == responsible)
+        .unwrap()
+        .disclosure_graph
+        .nodes
+        .retain(|node| node.kind != DisclosureKind::Confession);
+
+    compile(&template, &VariantId::from("classic")).unwrap();
 }
 
 #[test]

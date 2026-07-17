@@ -2,7 +2,9 @@ use crate::character::CharacterDefinition;
 use crate::disclosure::DisclosurePrerequisite;
 use crate::evidence::{CaseElement, DiscoveryRule, EvidenceDefinition};
 use crate::fact::{Fact, FactVisibility};
-use crate::id::{CaseId, ClaimId, DefenseStrategyId, DisclosureId, EvidenceId, FactId};
+use crate::id::{
+    CaseId, CharacterId, ClaimId, DefenseStrategyId, DisclosureId, EvidenceId, FactId,
+};
 use crate::validation::ValidationError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,6 +46,19 @@ pub struct Ending {
 
 impl CaseDefinition {
     pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
+        self.validate_internal(true)
+    }
+
+    /// Variant compilation already has an explicit responsible character, so a confession is
+    /// optional. If a confession path exists it is still validated for deterministic reachability.
+    pub fn validate_for_variant(
+        &self,
+        _responsible_character_id: &CharacterId,
+    ) -> Result<(), Vec<ValidationError>> {
+        self.validate_internal(false)
+    }
+
+    fn validate_internal(&self, require_confession: bool) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         errors.extend(self.check_duplicate_ids());
         errors.extend(self.check_ranges());
@@ -51,7 +66,7 @@ impl CaseDefinition {
         errors.extend(self.check_disclosure_graphs());
         errors.extend(self.check_required_elements());
         errors.extend(self.check_initial_knowledge());
-        errors.extend(self.check_culprit_reachability());
+        errors.extend(self.check_culprit_reachability(require_confession));
         if errors.is_empty() {
             Ok(())
         } else {
@@ -145,7 +160,10 @@ impl CaseDefinition {
                 );
             }
             for (di, rule) in item.discoverable_by.iter().enumerate() {
-                if let DiscoveryRule::AfterEvidencePresented(required) = rule {
+                if let DiscoveryRule::AfterEvidencePresented {
+                    evidence_id: required,
+                } = rule
+                {
                     reference(
                         &evidence,
                         required,
@@ -377,13 +395,13 @@ impl CaseDefinition {
         errors
     }
 
-    fn check_culprit_reachability(&self) -> Vec<ValidationError> {
+    fn check_culprit_reachability(&self, require_confession: bool) -> Vec<ValidationError> {
         let culprits: Vec<_> = self
             .characters
             .iter()
             .filter(|c| c.disclosure_graph.confession_node().is_some())
             .collect();
-        if culprits.is_empty() {
+        if require_confession && culprits.is_empty() {
             return vec![ValidationError::NoCulprit];
         }
         let available_evidence: BTreeSet<EvidenceId> = self

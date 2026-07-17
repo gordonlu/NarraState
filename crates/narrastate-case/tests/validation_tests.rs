@@ -1,5 +1,7 @@
 use narrastate_case::{adapt_v01, compile, validate_template, LegacyAdapterError};
-use narrastate_core::{CaseDefinition, DisclosureKind, Ending, InterrogationPhase, VariantId};
+use narrastate_core::{
+    CaseDefinition, DisclosureKind, DiscoveryRule, Ending, InterrogationPhase, VariantId,
+};
 
 fn legacy_case() -> CaseDefinition {
     serde_json::from_str(include_str!("../../../cases/rain-gallery/case.json")).unwrap()
@@ -110,4 +112,34 @@ fn compiled_but_unplayable_disclosure_path_fails_validation() {
         )
     }));
     assert!(report.variant_reports[0].simulation.is_some());
+}
+
+#[test]
+fn unreachable_evidence_report_identifies_missing_elements_and_reachable_frontier() {
+    let mut template = adapt_v01(legacy_case(), "1.0.0", VariantId::from("classic")).unwrap();
+    for evidence in &mut template.shared_evidence {
+        if evidence
+            .elements
+            .iter()
+            .any(|element| template.required_case_elements.contains(element))
+        {
+            evidence.discoverable_by = vec![DiscoveryRule::AfterEvidencePresented {
+                evidence_id: evidence.id.clone(),
+            }];
+        }
+    }
+
+    let report = validate_template(&template);
+    let issue = report
+        .errors
+        .iter()
+        .find(|issue| issue.code == "NO_PATH_TO_REQUIRED_EVIDENCE")
+        .expect("hidden required evidence must be reported");
+
+    assert!(issue.message.contains("missing required elements:"));
+    assert!(issue.message.contains("reachable evidence:"));
+    assert!(issue.message.contains("furthest phase:"));
+    assert!(issue
+        .message
+        .contains("without making every item starting evidence"));
 }

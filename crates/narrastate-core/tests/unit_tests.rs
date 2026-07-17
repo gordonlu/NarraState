@@ -1006,6 +1006,27 @@ fn test_evidence_definition_can_store_case_elements() {
 }
 
 #[test]
+fn discovery_rule_uses_unambiguous_tagged_object_fields() {
+    let phase_rule = DiscoveryRule::AutomaticAtPhase {
+        phase: InterrogationPhase::Guarded,
+    };
+    assert_eq!(
+        serde_json::to_value(&phase_rule).unwrap(),
+        serde_json::json!({"type": "AutomaticAtPhase", "phase": "Guarded"})
+    );
+    assert_eq!(
+        serde_json::from_value::<DiscoveryRule>(serde_json::json!({
+            "type": "AfterEvidencePresented",
+            "evidence_id": "evidence-1"
+        }))
+        .unwrap(),
+        DiscoveryRule::AfterEvidencePresented {
+            evidence_id: EvidenceId::from("evidence-1")
+        }
+    );
+}
+
+#[test]
 fn test_claim_construction() {
     let claim = ClaimDefinition {
         id: ClaimId::from("claim_test"),

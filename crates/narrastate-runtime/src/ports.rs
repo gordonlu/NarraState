@@ -148,6 +148,7 @@ pub trait CaseGenerationProvider: Send + Sync {
 pub enum GenerationProgressStage {
     Blueprint,
     SharedContent,
+    SharedCharacters,
     Variants,
     Assembling,
     RepairingShared,

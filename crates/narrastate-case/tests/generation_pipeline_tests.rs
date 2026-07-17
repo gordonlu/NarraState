@@ -101,6 +101,28 @@ async fn provider_timeout_and_empty_response_queue_are_explicit() {
 }
 
 #[tokio::test]
+async fn provider_failure_during_repair_preserves_the_triggering_validation_issues() {
+    let invalid = GeneratedCaseDraft {
+        generation_request: request(),
+        schema_version: "0.2".into(),
+        case: DraftCaseTemplate::default(),
+    };
+    let provider = MockCaseGenerationProvider::new(vec![
+        Ok(invalid),
+        Err(ProviderError::InvalidResponse("bad repair shape".into())),
+    ]);
+
+    let failure = run_generation_pipeline(&provider, request(), GenerationLimits::default())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "GENERATION_PROVIDER_INVALID_RESPONSE");
+    assert!(
+        !failure.issues.is_empty(),
+        "the report must retain the issues that caused the failed repair"
+    );
+}
+
+#[tokio::test]
 async fn duplicate_variant_ids_fail_with_stable_draft_issue() {
     let mut draft = valid_draft();
     draft.case.solution_variants[1].id = draft.case.solution_variants[0].id.clone();

@@ -102,15 +102,11 @@ pub fn compile(
     for (index, character) in characters.iter().enumerate() {
         let has_confession = character.disclosure_graph.confession_node().is_some();
         let is_responsible = character.id == variant.responsible_character_id;
-        if has_confession != is_responsible {
+        if has_confession && !is_responsible {
             issues.push(issue(
                 "COMPILE_RESPONSIBILITY_GRAPH_MISMATCH",
                 format!("characters[{index}].disclosure_graph"),
-                if is_responsible {
-                    "responsible character must have the main confession path"
-                } else {
-                    "non-responsible character must not have a main confession path"
-                },
+                "non-responsible character must not have a main confession path",
                 vec![character.id.to_string()],
             ));
         }
@@ -138,7 +134,7 @@ pub fn compile(
         ending: Some(variant.ending.clone()),
     };
 
-    if let Err(errors) = definition.validate() {
+    if let Err(errors) = definition.validate_for_variant(&variant.responsible_character_id) {
         issues.extend(errors.into_iter().map(validation_issue));
     }
     if !issues.is_empty() {

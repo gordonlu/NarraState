@@ -296,6 +296,23 @@ pub struct GeneratedSharedCaseDraft {
     pub initial_player_knowledge: PlayerKnowledge,
 }
 
+/// Shared facts and evidence generated before character-specific content.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedSharedWorldDraft {
+    pub required_case_elements: BTreeSet<CaseElement>,
+    pub shared_facts: Vec<Fact>,
+    pub shared_evidence: Vec<EvidenceDefinition>,
+    pub initial_player_knowledge: PlayerKnowledge,
+}
+
+/// One neutral shared character generated independently from the others.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedCharacterDraft {
+    pub character: CharacterDefinition,
+}
+
 /// One independently generated truth variant. The envelope makes identity checks explicit.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

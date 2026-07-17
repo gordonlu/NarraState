@@ -1076,7 +1076,7 @@ async fn complete_generation_job(
             .await?;
             let report = serde_json::json!({
                 "generator_version": env!("CARGO_PKG_VERSION"),
-                "generation_strategy": "staged-v1",
+                "generation_strategy": "staged-v2",
                 "provider": "openai-compatible",
                 "generated_at": chrono::Utc::now().to_rfc3339(),
                 "request": request,

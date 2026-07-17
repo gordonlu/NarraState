@@ -111,13 +111,14 @@ pub async fn run_generation_pipeline_with_id(
             ));
         }
         run.transition(GenerationStatus::Repairing, None);
+        let repair_issues = draft_issues.clone();
         let repair = GenerationRepairRequest {
             draft,
             issues: draft_issues,
         };
         let response = match provider.repair_draft(&repair).await {
             Ok(response) => response,
-            Err(error) => return Err(run.provider_failure(error)),
+            Err(error) => return Err(run.provider_failure_with_issues(error, repair_issues)),
         };
         run.repairs = run.repairs.saturating_add(1);
         run.usage = run.usage.combine(response.usage);
@@ -260,6 +261,14 @@ impl PipelineRun {
     }
 
     fn provider_failure(self, error: ProviderError) -> GenerationPipelineFailure {
+        self.provider_failure_with_issues(error, vec![])
+    }
+
+    fn provider_failure_with_issues(
+        self,
+        error: ProviderError,
+        issues: Vec<GenerationIssue>,
+    ) -> GenerationPipelineFailure {
         let code = match error {
             ProviderError::Timeout => "GENERATION_PROVIDER_TIMEOUT",
             ProviderError::OutputTruncated => "GENERATION_PROVIDER_OUTPUT_TRUNCATED",
@@ -268,6 +277,6 @@ impl PipelineRun {
             _ => "GENERATION_PROVIDER_FAILED",
         };
         let message = error.to_string();
-        self.fail(code, &message, vec![])
+        self.fail(code, &message, issues)
     }
 }

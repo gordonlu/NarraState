@@ -69,6 +69,7 @@ const statusLabels: Record<string, string> = {
 const stageLabels: Record<string, string> = {
   blueprint: '规划故事与真相框架',
   shared_content: '构建人物与公共线索',
+  shared_characters: '塑造案件人物',
   variants: '生成不同的真相',
   assembling: '组装完整案件',
   repairing_shared: '调整人物与公共线索',
@@ -78,7 +79,7 @@ const stageLabels: Record<string, string> = {
 }
 function eventLabel(event: GenerationJob['events'][number]) {
   const base = event.stage ? stageLabels[event.stage] : undefined
-  if ((event.stage === 'variants' || event.stage === 'repairing_variants') && event.total !== undefined) {
+  if ((event.stage === 'shared_characters' || event.stage === 'variants' || event.stage === 'repairing_variants') && event.total !== undefined) {
     return `${base} · ${event.completed ?? 0}/${event.total}`
   }
   return base ?? statusLabels[event.to] ?? event.to

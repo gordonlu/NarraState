@@ -303,8 +303,10 @@ fn discover_available(
         for item in evidence.values() {
             if item.discoverable_by.iter().any(|rule| match rule {
                 DiscoveryRule::StartingEvidence => true,
-                DiscoveryRule::AutomaticAtPhase(required) => phase >= *required,
-                DiscoveryRule::AfterEvidencePresented(required) => presented.contains(required),
+                DiscoveryRule::AutomaticAtPhase { phase: required } => phase >= *required,
+                DiscoveryRule::AfterEvidencePresented {
+                    evidence_id: required,
+                } => presented.contains(required),
             }) {
                 discovered.insert(item.id.clone());
             }

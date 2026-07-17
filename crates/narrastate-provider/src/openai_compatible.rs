@@ -132,7 +132,7 @@ impl LlmProvider for OpenAiProvider {
             Ok(value) => (value, true),
             Err(error) if should_retry_without_json_schema(&error) => {
                 let mut fallback_messages = vec![ChatMessage::system(format!(
-                    "Your provider does not support native JSON Schema mode. Return one data instance that strictly matches this schema; no Markdown or extra keys. Never copy or emit schema-definition keywords such as properties, type, $ref, oneOf, anyOf, required, or definitions as field values. Enum fields must contain one allowed scalar enum value, not a schema object:\n{}",
+                    "当前 Provider 不支持原生 JSON Schema 模式。请只返回一个严格符合下列 Schema 的数据实例，不要使用 Markdown，不要添加额外字段。不得把 properties、type、$ref、oneOf、anyOf、required 或 definitions 等 Schema 关键字当作字段值输出。枚举字段必须是允许的单个标量值，不得输出 Schema 对象：\n{}",
                     serde_json::to_string(response_schema).unwrap_or_default()
                 ))];
                 fallback_messages.extend(messages.iter().cloned());
@@ -154,7 +154,7 @@ impl LlmProvider for OpenAiProvider {
             Ok(output) => output,
             Err(ProviderError::OutputTruncated) => {
                 let mut correction_messages = vec![ChatMessage::system(format!(
-                    "The previous response reached the provider output limit. Regenerate the complete JSON object from the original request in a substantially more compact form. Use short strings, remove stylistic elaboration and repeated descriptions, and reuse shared definitions by ID. Preserve every required fact, evidence link, reference, disclosure prerequisite, solution requirement, and requested variant. Do not continue the partial response and do not return a patch. Required schema:\n{}",
+                    "上一次响应达到了 Provider 的输出上限。请从原始请求重新生成完整且明显更紧凑的 JSON 对象。使用短字符串，删除风格化扩写和重复描述，通过 ID 复用共享定义。必须保留所有必需事实、证据链接、引用、披露前置、结案要求和指定变体。不要续写被截断的响应，不要返回补丁。必须符合的 Schema：\n{}",
                     serde_json::to_string(response_schema).unwrap_or_default()
                 ))];
                 correction_messages.extend(messages.iter().cloned());
@@ -177,7 +177,7 @@ impl LlmProvider for OpenAiProvider {
             }
             Err(first_error) if is_repairable_structured_parse(&first_error) => {
                 let mut correction_messages = vec![ChatMessage::system(format!(
-                    "The previous response was not valid JSON for the requested structured data. Regenerate the complete data instance from the original request. Return one JSON object only; do not quote or patch the previous response. Never emit JSON Schema keywords as data. Parse error: {first_error}\nRequired schema:\n{}",
+                    "上一次响应不是请求结构所需的有效 JSON。请从原始请求重新生成完整数据实例，只返回一个 JSON 对象；不要引用或修补上一次响应，不得把 JSON Schema 关键字当作数据。解析错误：{first_error}\n必须符合的 Schema：\n{}",
                     serde_json::to_string(response_schema).unwrap_or_default()
                 ))];
                 correction_messages.extend(messages.iter().cloned());

@@ -1,7 +1,10 @@
-use crate::{canonical_hash, compile, simulate_case, SimulationLimits, SimulationResult};
+use crate::{
+    canonical_hash, compile, simulate_case, SimulationFailure, SimulationLimits, SimulationResult,
+};
 use narrastate_core::{
     CaseTemplate, CompiledCase, EvidenceDefinition, Fact, SolutionVariant, VariantId,
 };
+use narrastate_runtime::covered_elements;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,7 +74,7 @@ pub fn validate_template(template: &CaseTemplate) -> CaseValidationReport {
                     issues.push(error(
                         reason.code(),
                         format!("solution_variants[{}]", variant.id),
-                        "deterministic simulation found no legal completion path",
+                        simulation_failure_message(&value, &simulation),
                         vec![variant.id.to_string()],
                     ));
                 }
@@ -113,6 +116,74 @@ pub fn validate_template(template: &CaseTemplate) -> CaseValidationReport {
         errors,
         warnings: vec![],
         variant_reports,
+    }
+}
+
+fn simulation_failure_message(case: &CompiledCase, simulation: &SimulationResult) -> String {
+    let evidence = case
+        .definition
+        .evidence
+        .iter()
+        .cloned()
+        .map(|item| (item.id.clone(), item))
+        .collect::<BTreeMap<_, _>>();
+    let acquired = simulation
+        .acquired_evidence_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let coverage = covered_elements(&acquired, &evidence);
+    let missing = case
+        .definition
+        .required_case_elements
+        .difference(&coverage)
+        .map(|element| format!("{element:?}"))
+        .collect::<Vec<_>>();
+    let phase = simulation
+        .trace
+        .last()
+        .map(|step| format!("{:?}", step.phase_after))
+        .unwrap_or_else(|| "none".into());
+    let acquired = simulation
+        .acquired_evidence_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    match simulation.failure_reason.as_ref() {
+        Some(SimulationFailure::NoPathToRequiredEvidence) => format!(
+            "deterministic simulation found no legal completion path; missing required elements: [{}]; reachable evidence: [{}]; furthest phase: {phase}. Repair the evidence discovery chain from StartingEvidence or already reachable evidence without making every item starting evidence",
+            missing.join(", "),
+            acquired.join(", ")
+        ),
+        Some(SimulationFailure::DisclosureNodeUnreachable) => {
+            let reached = simulation
+                .reached_disclosure_nodes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>();
+            let responsible = case
+                .definition
+                .characters
+                .iter()
+                .find(|character| character.id == case.responsible_character_id);
+            let unreached = responsible
+                .into_iter()
+                .flat_map(|character| character.disclosure_graph.nodes.iter())
+                .map(|node| node.id.to_string())
+                .filter(|id| !reached.contains(id))
+                .collect::<Vec<_>>();
+            format!(
+                "all required evidence elements are reachable, but the disclosure path cannot finish; reached disclosures: [{}]; unreached disclosures: [{}]; reachable evidence: [{}]; furthest phase: {phase}. Repair disclosure prerequisites and minimum phases so they form a reachable chain; do not change the frozen truth",
+                reached.into_iter().collect::<Vec<_>>().join(", "),
+                unreached.join(", "),
+                acquired.join(", ")
+            )
+        }
+        _ => format!(
+            "deterministic simulation found no legal completion path; missing required elements: [{}]; reachable evidence: [{}]; furthest phase: {phase}",
+            missing.join(", "),
+            acquired.join(", ")
+        ),
     }
 }
 

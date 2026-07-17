@@ -46,10 +46,10 @@ pub enum CaseElement {
     Concealment,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum DiscoveryRule {
     StartingEvidence,
-    AutomaticAtPhase(InterrogationPhase),
-    AfterEvidencePresented(EvidenceId),
+    AutomaticAtPhase { phase: InterrogationPhase },
+    AfterEvidencePresented { evidence_id: EvidenceId },
 }
