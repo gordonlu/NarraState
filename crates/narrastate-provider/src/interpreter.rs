@@ -102,9 +102,6 @@ impl LlmInterpreter {
                 "interpreter returned a claim outside the allow-list".into(),
             ));
         }
-        if !attached_evidence.is_empty() {
-            intent = PlayerIntent::PresentEvidence;
-        }
         let referenced_claims = if confidence < 0.5 {
             intent = PlayerIntent::Ask;
             topics = vec!["unknown".into()];

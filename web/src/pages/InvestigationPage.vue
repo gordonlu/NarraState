@@ -72,6 +72,16 @@ const focusedEvidence = computed(() =>
 const focusedCharacter = computed(() =>
   store.activeCase?.characters.find((character) => character.id === focusedCharacterId.value),
 )
+const sceneVisual = computed(() => {
+  const visuals = store.activeCase?.visual_assets ?? []
+  return visuals.find((asset) => asset.visual_type === 'scene_background')
+    ?? visuals.find((asset) => asset.visual_type === 'location_atmosphere')
+    ?? visuals.find((asset) => asset.visual_type === 'chapter_illustration')
+})
+const prologueVisual = computed(() =>
+  (store.activeCase?.visual_assets ?? []).find((asset) => asset.visual_type === 'case_cover')
+    ?? sceneVisual.value,
+)
 const filteredEvidence = computed(() => {
   const query = evidenceQuery.value.trim().toLocaleLowerCase()
   if (!query) return store.session?.discovered_evidence ?? []
@@ -107,12 +117,28 @@ onBeforeUnmount(() => {
   evidenceDrag?.destroy()
 })
 
+async function scrollTranscriptToLatest(behavior: ScrollBehavior) {
+  await nextTick()
+  const element = transcript.value
+  if (!element) return
+  element.scrollTo({ top: element.scrollHeight, behavior })
+}
+
 watch(
-  () => [store.session?.conversation.length, store.streamText],
-  async () => {
-    await nextTick()
-    transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: 'smooth' })
-  },
+  () => [
+    store.session?.conversation.length ?? 0,
+    store.pendingQuestion?.text ?? '',
+    store.streaming,
+    store.activeCharacterId ?? '',
+  ],
+  () => scrollTranscriptToLatest('smooth'),
+  { flush: 'post' },
+)
+
+watch(
+  () => store.streamText,
+  () => scrollTranscriptToLatest('auto'),
+  { flush: 'post' },
 )
 
 watch(
@@ -132,6 +158,15 @@ watch(inference, (value) => localStorage.setItem(`narrastate:inference:${session
 
 function characterName(id: string) {
   return store.activeCase?.characters.find((character) => character.id === id)?.name ?? id
+}
+
+function characterPortrait(id: string) {
+  return store.activeCase?.characters.find((character) => character.id === id)?.portrait_url
+}
+
+function entryPortrait(entry: DialogueEntry) {
+  const id = speakerId(entry.speaker)
+  return id === 'Player' || id === 'System' ? undefined : characterPortrait(id)
 }
 
 function entrySpeaker(entry: DialogueEntry) {
@@ -290,6 +325,7 @@ function enterInvestigation() {
     <NoticeBar v-else-if="store.error" :message="store.error" tone="error" @close="store.error = undefined" />
 
     <section v-if="prologueOpen && store.activeCase" class="investigation-prologue" role="dialog" aria-modal="true" aria-labelledby="prologue-title">
+      <img v-if="prologueVisual" class="prologue-background" :src="prologueVisual.url" alt="" />
       <div class="prologue-card">
         <span>调查开始 · CASE OPEN</span>
         <h1 id="prologue-title">{{ store.activeCase.title }}</h1>
@@ -321,7 +357,7 @@ function enterInvestigation() {
           <div v-else class="people-list">
             <div v-for="character in store.activeCase.characters" :key="character.id" class="person-row-wrap" :class="{ selected: store.activeCharacterId === character.id }" :data-character-source="character.id" :data-flip-id="`character-${character.id}`">
               <button class="person-row" type="button" :disabled="store.streaming" @click="selectCharacter(character.id)">
-                <span class="person-mark">{{ character.name.slice(0, 1) }}</span>
+                <span class="person-mark"><img v-if="character.portrait_url" :src="character.portrait_url" alt="" /><template v-else>{{ character.name.slice(0, 1) }}</template></span>
                 <span><strong>{{ character.name }}</strong><small>{{ character.role }}</small></span>
               </button>
               <button class="person-detail-button" type="button" :aria-label="`查看 ${character.name} 的公开档案`" @click="openCharacterDetail(character.id)"><AppIcon name="chevron-right" :size="18" /></button>
@@ -338,6 +374,7 @@ function enterInvestigation() {
       </aside>
 
       <section ref="dialoguePanel" class="dialogue-panel workspace-dialogue">
+        <img v-if="sceneVisual" class="dialogue-scene-backdrop" :src="sceneVisual.url" alt="" />
         <header class="dialogue-heading">
           <div><span>正在与{{ store.activeCharacter?.name }}交谈</span><small>{{ store.activeCharacter?.role }}</small></div>
           <button class="mobile-context-button" type="button" @click="mobileTab = 'people'">切换人物</button>
@@ -350,7 +387,7 @@ function enterInvestigation() {
             <button type="button" @click="question = '请从头说说，事情发生前后你做了什么？'">使用建议问题</button>
           </div>
           <article v-for="(entry, index) in visibleConversation" :key="`${entry.turn_id}-${entrySpeaker(entry)}`" class="transcript-turn" :class="{ player: speakerId(entry.speaker) === 'Player' }" :data-turn-index="index">
-            <header><span class="speaker-mark">{{ entrySpeaker(entry).slice(0, 1) }}</span><strong>{{ entrySpeaker(entry) }}</strong><time>回合 {{ entryTurnNumber(entry) }}</time></header>
+            <header><span class="speaker-mark"><img v-if="entryPortrait(entry)" :src="entryPortrait(entry)" alt="" /><template v-else>{{ entrySpeaker(entry).slice(0, 1) }}</template></span><strong>{{ entrySpeaker(entry) }}</strong><time>回合 {{ entryTurnNumber(entry) }}</time></header>
             <p>{{ entry.text }}</p>
             <div v-if="entry.attached_evidence.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ entry.attached_evidence.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
           </article>
@@ -360,7 +397,7 @@ function enterInvestigation() {
             <div v-if="visiblePendingQuestion.attachedEvidenceIds.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ visiblePendingQuestion.attachedEvidenceIds.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
           </article>
           <article v-if="store.streaming" class="transcript-turn streaming-turn">
-            <header><span class="streaming-mark"><i /><i /><i /></span><strong>{{ store.activeCharacter?.name }}</strong><time>{{ store.streamStage }}</time></header>
+            <header><span class="speaker-mark streaming-mark"><img v-if="store.activeCharacter?.portrait_url" :src="store.activeCharacter.portrait_url" alt="" /><template v-else><i /><i /><i /></template></span><strong>{{ store.activeCharacter?.name }}</strong><time>{{ store.streamStage }}</time></header>
             <p>{{ store.streamText }}<span class="stream-caret" /></p>
           </article>
         </div>

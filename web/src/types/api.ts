@@ -57,6 +57,13 @@ export interface CaseDetail extends CaseSummary {
   evidence: Evidence[]
   characters: CharacterSummary[]
   visual_assets: VisualAsset[]
+  visual_status?: {
+    requested: boolean
+    generated: number
+    state: 'not_requested' | 'ready' | 'partial' | 'unavailable'
+    failure_code?: 'bad_request' | 'endpoint_not_found' | 'forbidden' | 'incompatible_response' | 'unauthorized' | 'rate_limited' | 'timeout' | 'not_configured' | 'provider_failed' | 'report_unavailable'
+    failure_detail?: string
+  }
 }
 
 export type GeneratedVisualType =
@@ -73,6 +80,17 @@ export interface VisualAsset {
   visual_type: GeneratedVisualType
   url: string
   alt_text: string
+}
+
+export type VisualGenerationMode = 'append_missing' | 'regenerate_all'
+
+export interface VisualGenerationResult {
+  mode: VisualGenerationMode
+  attempted: number
+  updated: number
+  failed: number
+  total: number
+  visual_status: NonNullable<CaseDetail['visual_status']>
 }
 
 export type DialogueSpeaker = 'Player' | 'System' | { Character: string }
@@ -113,6 +131,7 @@ export interface PublicConfig {
   base_url: string
   model: string
   api_key: string
+  developer_mode: boolean
   image_provider: { enabled: boolean; configured: boolean; key_persisted: boolean; base_url: string; model: string }
 }
 
@@ -129,6 +148,7 @@ export interface CreateGenerationJobRequest extends GenerationRequest {
 export interface GenerationJob {
   job_id: string; status: string; attempt_count: number; repair_count: number
   error_code?: string; error_message?: string; result_path?: string
+  case_id?: string; case_version?: string
   events: Array<{
     sequence: number; to: string; error_code?: string; stage?: string
     completed?: number; total?: number

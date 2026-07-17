@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import SiteHeader from '../components/home/SiteHeader.vue'
+import CaseBriefPage from '../pages/CaseBriefPage.vue'
 import CaseGenerationPage from '../pages/CaseGenerationPage.vue'
 import { homePageContent } from '../content/home'
 
@@ -117,6 +118,121 @@ describe('player-facing UI contract', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
     expect(wrapper.text()).toContain('模型返回的案件内容没有完整结束')
     expect(wrapper.get('input[placeholder*="海港仓库"]').element).toHaveProperty('value', '')
+    vi.unstubAllGlobals()
+  })
+
+  it('opens the generated case brief when a completed job returns its case id', async () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      if (String(input).includes('/config/public')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          configured: true,
+          image_provider: { enabled: false, configured: false },
+        }), { headers: { 'Content-Type': 'application/json' } }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        job_id: 'job-complete', status: 'completed', attempt_count: 1, repair_count: 0,
+        case_id: 'generated-harbor-case', case_version: '1.0.0', result_path: 'data/installed-cases/generated-harbor-case/1.0.0',
+        events: [{ sequence: 0, to: 'completed' }], updated_at: '',
+      }), { headers: { 'Content-Type': 'application/json' } }))
+    }))
+    const destination = { template: '<div>新案件简报</div>' }
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/generate', component: CaseGenerationPage },
+        { path: '/cases', name: 'cases', component: destination },
+        { path: '/cases/:caseId', name: 'case-brief', component: destination },
+      ],
+    })
+    await router.push('/generate')
+    await router.isReady()
+    const wrapper = mount(CaseGenerationPage, { global: { plugins: [createPinia(), router] } })
+    await flushPromises()
+
+    await wrapper.get('input[aria-invalid]').setValue('港口失踪案')
+    await wrapper.get('.generation-form').trigger('submit')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('case-brief')
+    expect(router.currentRoute.value.params.caseId).toBe('generated-harbor-case')
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('offers append and regenerate actions for an installed generated case', async () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    const modes: string[] = []
+    let visualsReady = false
+    const detail = {
+      id: 'generated-case', title: '生成案件', summary: '测试案件', locale: 'zh-CN',
+      character_count: 1, evidence_count: 0, facts: [], evidence: [],
+      characters: [{ id: 'char-1', name: '林川', role: '相关人物', public_profile: '公开简介' }],
+      visual_assets: [],
+      visual_status: { requested: true, generated: 0, state: 'unavailable', failure_code: 'provider_failed' },
+    }
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/config/public')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          configured: true,
+          image_provider: { enabled: true, configured: true },
+        }), { headers: { 'Content-Type': 'application/json' } }))
+      }
+      if (url.endsWith('/api/v1/cases')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } }))
+      }
+      if (url.includes('/visuals/generate')) {
+        const mode = JSON.parse(String(init?.body)).mode as string
+        modes.push(mode)
+        visualsReady = true
+        const updated = mode === 'append_missing' ? 2 : 3
+        return Promise.resolve(new Response(JSON.stringify({
+          mode, attempted: updated, updated, failed: 0, total: 3,
+          visual_status: { requested: true, generated: 3, state: 'ready' },
+        }), { headers: { 'Content-Type': 'application/json' } }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        ...detail,
+        visual_status: visualsReady
+          ? { requested: true, generated: 3, state: 'ready' }
+          : detail.visual_status,
+      }), { headers: { 'Content-Type': 'application/json' } }))
+    }))
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/cases/:caseId', component: CaseBriefPage }],
+    })
+    await router.push('/cases/generated-case')
+    await router.isReady()
+    const wrapper = mount(CaseBriefPage, { global: { plugins: [createPinia(), router] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('开局锁定一个已经验证的真相版本')
+    expect(wrapper.text()).not.toContain('使用作者推荐版本')
+    expect(wrapper.text()).not.toContain('开发者真相设置')
+    await wrapper.get('.brief-visual-actions button:first-child').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已更新 2 张配图')
+    expect(wrapper.get('.brief-visual-actions button:first-child').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.brief-visual-actions button:first-child').text()).toContain('已完成')
+
+    await wrapper.findAll('.brief-visual-actions button')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('确认重新生成全部配图')
+    expect(wrapper.text()).toContain('可能产生费用')
+    expect(modes).toEqual(['append_missing'])
+    await wrapper.get('.brief-visual-confirmation .secondary-button').trigger('click')
+    expect(wrapper.find('.brief-visual-confirmation').exists()).toBe(false)
+    expect(modes).toEqual(['append_missing'])
+
+    await wrapper.findAll('.brief-visual-actions button')[1].trigger('click')
+    await wrapper.get('.brief-visual-confirmation .primary-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已更新 3 张配图')
+    expect(modes).toEqual(['append_missing', 'regenerate_all'])
+
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 

@@ -42,4 +42,9 @@ HTTP 接口：
 - `GET /api/v1/case-generation/jobs/{job_id}`
 - `GET /api/v1/case-generation/jobs/{job_id}/report`
 
+生成完成后，正式案件包会安装到 `NARRASTATE_CASE_INSTALL_DIR`（默认
+`data/installed-cases/<case-id>/<version>/`），而不是写入随源码提交的 `cases/`
+目录。Web 端会使用完成响应中的 `case_id` 直接打开案件简报；服务重启时也会从
+已安装索引恢复这些案件，因此无需重新生成。
+
 成功案件以普通目录包原子安装。生成报告只保存请求、次数和确定性校验结果，不保存 Key、Authorization Header 或完整系统提示词。

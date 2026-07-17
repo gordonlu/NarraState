@@ -11,6 +11,7 @@ The local API prefix is `/api/v1`. JSON errors use `application/problem+json` wi
 | POST | `/config/test-provider` | Test and save non-secret provider settings |
 | GET | `/cases` | Public case summaries |
 | GET | `/cases/{case_id}` | Redacted public case detail |
+| POST | `/cases/{case_id}/visuals/generate` | Append missing or regenerate decorative visuals for a generated case |
 | POST | `/cases/validate` | Validate a submitted case definition |
 | POST | `/cases/install` | Validate and atomically install inline Manifest/Template content |
 | POST | `/games` | Create an immutable v0.2 case instance and player session |
@@ -18,6 +19,8 @@ The local API prefix is `/api/v1`. JSON errors use `application/problem+json` wi
 The provider API key is accepted for the connectivity request or read from the server environment. It is never returned or persisted.
 
 `POST /cases/install` accepts `manifest`, `template`, and an optional `generation_report` JSON object. It never accepts a server filesystem path. Inline v0.2 installation currently rejects asset-bearing packages; asset archives will use a separately bounded upload format. The server writes into `NARRASTATE_CASE_INSTALL_DIR` (default `data/installed-cases`), validates from a temporary directory, then atomically renames the completed package.
+
+Visual generation accepts `{"mode":"append_missing"}` or `{"mode":"regenerate_all"}`. It uses only the independently configured image Provider. The response reports attempted, updated, failed, and total image counts. `visual_status.failure_code` provides a stable category and `failure_detail` may contain a bounded, redacted structured message from the Provider. Failed replacements retain their previous images; the endpoint never changes case truth or frozen sessions.
 
 ## Games and truth selection
 
@@ -33,7 +36,7 @@ Content-Type: application/json
 }
 ```
 
-`variant_selection.mode` is `default`, `random`, or—only when developer mode is enabled—`specific`. A specific request also includes `variant_id`. Random selection considers only enabled variants that passed compilation, validation, and deterministic simulation. The same case version and seed produce the same selection.
+`variant_selection.mode` is `default`, `random`, or—only when developer mode is explicitly enabled with `NARRASTATE_DEVELOPER_MODE=1`—`specific`. A specific request also includes `variant_id`. Random selection considers only enabled variants that passed compilation, validation, and deterministic simulation. The same case version and seed produce the same selection. AI-generated cases use random selection in the normal player UI; their first variant remains a schema-level default for compatibility, not an author recommendation.
 
 The response returns `session_id`, `instance_id`, `case_id`, `case_version`, and `seed`. It deliberately omits the selected variant, responsible character, hidden facts, and variant title. The complete compiled case is persisted before Session creation, and subsequent actions load that immutable snapshot.
 

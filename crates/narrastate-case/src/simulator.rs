@@ -232,31 +232,57 @@ pub fn simulate_case(case: &CompiledCase, limits: SimulationLimits) -> Simulatio
                     })
             })
             .collect();
+        let has_unrevealed_disclosure = character
+            .disclosure_graph
+            .nodes
+            .iter()
+            .any(|node| !state.runtime.revealed_disclosures.contains(&node.id));
+        if evidence_complete
+            && has_unrevealed_disclosure
+            && matches!(
+                state.runtime.phase,
+                InterrogationPhase::Guarded
+                    | InterrogationPhase::Defensive
+                    | InterrogationPhase::Pressured
+                    | InterrogationPhase::Cornered
+            )
+        {
+            actions.push(SimulationAction::AskDecisiveFollowUp(character.id.clone()));
+        }
         actions.sort_by_key(action_key);
         actions.truncate(limits.max_branching);
         for action in actions {
-            let SimulationAction::PresentEvidence {
-                evidence: evidence_id,
-                claim,
-                ..
-            } = &action
-            else {
-                continue;
+            let interpreted = match &action {
+                SimulationAction::PresentEvidence {
+                    evidence: evidence_id,
+                    claim,
+                    ..
+                } => InterpretedAction {
+                    intent: PlayerIntent::PresentEvidence,
+                    topics: vec![],
+                    referenced_entities: vec![],
+                    referenced_claims: claim.iter().cloned().collect(),
+                    evidence_usage: vec![EvidenceUse {
+                        evidence_id: evidence_id.clone(),
+                        usage: EvidenceUsageKind::DirectReference,
+                    }],
+                    asserted_propositions: vec![],
+                    tone: PlayerTone::Neutral,
+                    confidence: 1.0,
+                },
+                SimulationAction::AskDecisiveFollowUp(_) => InterpretedAction {
+                    intent: PlayerIntent::Challenge,
+                    topics: vec![],
+                    referenced_entities: vec![],
+                    referenced_claims: vec![],
+                    evidence_usage: vec![],
+                    asserted_propositions: vec![],
+                    tone: PlayerTone::Neutral,
+                    confidence: 1.0,
+                },
+                _ => continue,
             };
             let mut next = state.clone();
-            let interpreted = InterpretedAction {
-                intent: PlayerIntent::PresentEvidence,
-                topics: vec![],
-                referenced_entities: vec![],
-                referenced_claims: claim.iter().cloned().collect(),
-                evidence_usage: vec![EvidenceUse {
-                    evidence_id: evidence_id.clone(),
-                    usage: EvidenceUsageKind::DirectReference,
-                }],
-                asserted_propositions: vec![],
-                tone: PlayerTone::Neutral,
-                confidence: 1.0,
-            };
             let transition = engine.process_with_requirements(
                 &interpreted,
                 &mut next.runtime,
@@ -334,6 +360,9 @@ fn action_key(action: &SimulationAction) -> String {
     match action {
         SimulationAction::PresentEvidence { evidence, .. }
         | SimulationAction::ChallengeClaim { evidence, .. } => evidence.to_string(),
+        SimulationAction::AskDecisiveFollowUp(character) => {
+            format!("~follow-up:{character}")
+        }
         _ => format!("{action:?}"),
     }
 }

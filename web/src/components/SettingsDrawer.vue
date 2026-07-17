@@ -147,7 +147,7 @@ function validateTextProvider() {
             <label>独立模型<input v-model="imageForm.model" /></label>
             <label>独立 API Key<input v-model="imageForm.api_key" type="password" :placeholder="store.config?.image_provider.configured ? '已配置' : '输入图片 Provider Key'" /></label>
             <label class="settings-checkbox"><input v-model="imageForm.persist_api_key" type="checkbox" />重启后保留图片 Key</label>
-            <p class="privacy-copy">与主对话模型完全独立；缺失或失败时使用默认视觉，不影响案件逻辑。</p>
+            <p class="privacy-copy">与主对话模型完全独立；服务需支持 OpenAI-compatible /images/generations 接口和 b64_json 返回。缺失或失败时使用默认视觉，不影响案件逻辑。</p>
             <button class="secondary-button wide-button" :disabled="saving">保存图片配置</button>
           </form>
         </aside>

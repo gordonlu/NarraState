@@ -97,3 +97,39 @@ fn turn_limit_is_not_silently_treated_as_unreachable() {
     );
     assert_eq!(result.failure_reason, Some(SimulationFailure::TurnLimit));
 }
+
+#[test]
+fn evidence_complete_action_disclosure_can_finish_through_decisive_follow_ups() {
+    let mut case = compiled_case();
+    for evidence in &mut case.definition.evidence {
+        evidence.reliability = 0.0;
+        evidence.directness = 0.0;
+        evidence.exclusivity = 0.0;
+    }
+    let responsible = case
+        .definition
+        .characters
+        .iter_mut()
+        .find(|character| character.id == case.responsible_character_id)
+        .unwrap();
+    for node in &mut responsible.disclosure_graph.nodes {
+        if node.kind != narrastate_core::DisclosureKind::Confession {
+            node.min_phase = narrastate_core::InterrogationPhase::Calm;
+            for prerequisite in &mut node.prerequisites {
+                if let narrastate_core::DisclosurePrerequisite::PhaseAtLeast { min_phase } =
+                    prerequisite
+                {
+                    *min_phase = narrastate_core::InterrogationPhase::Calm;
+                }
+            }
+        }
+    }
+
+    let result = simulate_case(&case, SimulationLimits::default());
+
+    assert!(result.success, "failure: {:?}", result.failure_reason);
+    assert!(result.trace.iter().any(|step| matches!(
+        step.action,
+        narrastate_case::SimulationAction::AskDecisiveFollowUp(_)
+    )));
+}

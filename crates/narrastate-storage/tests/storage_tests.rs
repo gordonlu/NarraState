@@ -125,6 +125,35 @@ async fn case_list_order_is_stable_across_load_order() {
 }
 
 #[tokio::test]
+async fn installed_visual_update_changes_only_mutable_package_index_fields() {
+    let repo = SqliteRepository::new_in_memory().await.unwrap();
+    let original = InstalledCaseRecord {
+        case_id: "generated-case".into(),
+        case_version: "1.0.0".into(),
+        source_path: "/tmp/generated-case/1.0.0".into(),
+        schema_version: "0.2".into(),
+        template_content_hash: "sha256:old".into(),
+    };
+    repo.install_case(&original).await.unwrap();
+    let mut updated = original.clone();
+    updated.template_content_hash = "sha256:new-visuals".into();
+    repo.update_installed_case_visuals(&updated).await.unwrap();
+
+    let records = repo.list_installed_cases().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].template_content_hash, "sha256:new-visuals");
+    assert_eq!(records[0].case_version, "1.0.0");
+    assert_eq!(records[0].schema_version, "0.2");
+
+    let mut missing = updated;
+    missing.case_id = "missing".into();
+    assert!(matches!(
+        repo.update_installed_case_visuals(&missing).await,
+        Err(StorageError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
 async fn migration_case_session_settings_and_llm_metadata_roundtrip() {
     let (repo, state) = repository_with_session().await;
     let loaded = repo.load_session(&state.session_id).await.expect("session");

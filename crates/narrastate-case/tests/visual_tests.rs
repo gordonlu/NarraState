@@ -47,22 +47,39 @@ async fn generated_visual_is_always_decorative_and_shared() {
 }
 
 #[test]
-fn default_specs_cover_every_supported_public_visual_category() {
+fn default_specs_only_generate_visuals_consumed_by_the_current_player_ui() {
     let source =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cases/rain-gallery-variants");
     let package = load_case_package(source).unwrap();
     let specs = default_visual_specs(&package.template, "现代画廊");
-    for expected in [
-        GeneratedVisualType::CaseCover,
-        GeneratedVisualType::ChapterIllustration,
-        GeneratedVisualType::SceneBackground,
-        GeneratedVisualType::LocationAtmosphere,
-        GeneratedVisualType::CharacterPortrait,
-        GeneratedVisualType::TransitionIllustration,
-        GeneratedVisualType::EndingIllustration,
-    ] {
-        assert!(specs.iter().any(|spec| spec.visual_type == expected));
-    }
+    assert_eq!(specs.len(), 2 + package.template.shared_characters.len());
+    assert_eq!(
+        specs
+            .iter()
+            .filter(|spec| spec.visual_type == GeneratedVisualType::CaseCover)
+            .count(),
+        1
+    );
+    assert_eq!(
+        specs
+            .iter()
+            .filter(|spec| spec.visual_type == GeneratedVisualType::SceneBackground)
+            .count(),
+        1
+    );
+    assert_eq!(
+        specs
+            .iter()
+            .filter(|spec| spec.visual_type == GeneratedVisualType::CharacterPortrait)
+            .count(),
+        package.template.shared_characters.len()
+    );
+    assert!(specs.iter().all(|spec| matches!(
+        spec.visual_type,
+        GeneratedVisualType::CaseCover
+            | GeneratedVisualType::SceneBackground
+            | GeneratedVisualType::CharacterPortrait
+    )));
     assert!(specs
         .iter()
         .all(|spec| !spec.public_prompt.contains("variant-")));

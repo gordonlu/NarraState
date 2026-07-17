@@ -493,6 +493,46 @@ impl Repository for SqliteRepository {
             .collect())
     }
 
+    async fn update_installed_case_visuals(
+        &self,
+        case: &InstalledCaseRecord,
+    ) -> Result<(), StorageError> {
+        let existing_schema: Option<String> = sqlx::query_scalar(
+            "SELECT schema_version FROM installed_cases WHERE case_id = ? AND case_version = ?",
+        )
+        .bind(case.case_id.as_ref())
+        .bind(&case.case_version)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_database)?;
+        let Some(existing_schema) = existing_schema else {
+            return Err(StorageError::NotFound(format!(
+                "installed case {} {}",
+                case.case_id, case.case_version
+            )));
+        };
+        if existing_schema != case.schema_version {
+            return Err(StorageError::Constraint(format!(
+                "installed case {} {} schema version cannot change during visual update",
+                case.case_id, case.case_version
+            )));
+        }
+        sqlx::query(
+            "UPDATE installed_cases
+             SET source_path = ?, template_content_hash = ?, installed_at = ?
+             WHERE case_id = ? AND case_version = ?",
+        )
+        .bind(&case.source_path)
+        .bind(&case.template_content_hash)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(case.case_id.as_ref())
+        .bind(&case.case_version)
+        .execute(&self.pool)
+        .await
+        .map_err(map_database)?;
+        Ok(())
+    }
+
     async fn save_case_instance(&self, instance: &CaseInstance) -> Result<(), StorageError> {
         if !verify_compiled_hash(&instance.compiled_case)
             .map_err(|error| StorageError::Serialization(error.to_string()))?

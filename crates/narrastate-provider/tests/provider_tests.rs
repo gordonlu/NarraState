@@ -195,7 +195,7 @@ async fn interpreter_enforces_claim_allow_list() {
 }
 
 #[tokio::test]
-async fn interpreter_preserves_authoritative_evidence_attachment() {
+async fn interpreter_preserves_evidence_without_rewriting_a_question_as_confrontation() {
     let case = case();
     let character = &case.characters[0];
     let provider = Arc::new(ScriptedProvider::new(vec![Ok(serde_json::json!({
@@ -216,10 +216,7 @@ async fn interpreter_preserves_authoritative_evidence_attachment() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        result.intent,
-        narrastate_core::PlayerIntent::PresentEvidence
-    );
+    assert_eq!(result.intent, narrastate_core::PlayerIntent::Ask);
     assert_eq!(result.evidence_usage[0].evidence_id, evidence);
 }
 
@@ -250,4 +247,41 @@ async fn invalid_renderer_output_repairs_once_then_uses_template() {
     assert_eq!(status, RendererStatus::TemplateFallback);
     assert!(!output.utterance.is_empty());
     assert!(output.acknowledged_fact_ids.is_empty());
+}
+
+#[tokio::test]
+async fn answer_fallback_uses_authorized_context_instead_of_empty_acknowledgement() {
+    let case = case();
+    let character = &case.characters[0];
+    let invalid = serde_json::json!({
+        "utterance":"我认罪，是我做的。",
+        "expressed_claim_ids":[],
+        "acknowledged_fact_ids":["fact_painting_hidden"],
+        "tone":"confessional"
+    });
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(invalid.clone()),
+        Ok(invalid),
+    ]));
+    let mut plan = deny_plan();
+    plan.act = DialogueAct::Answer;
+    plan.allowed_facts = vec![narrastate_core::FactId::from("fact_gallery_closed")];
+    let context = RendererContext {
+        locale: &case.locale,
+        facts: &case.facts,
+        recent_dialogue: &[],
+        latest_player_message: "闭馆时间是什么时候？",
+    };
+
+    let (output, status) = LlmRenderer::new(provider)
+        .render_validated(&plan, character, &context)
+        .await;
+
+    assert_eq!(status, RendererStatus::TemplateFallback);
+    assert!(output.utterance.contains("21:40"));
+    assert_ne!(output.utterance, "我会回答你的问题。");
+    assert_eq!(
+        output.acknowledged_fact_ids,
+        vec![narrastate_core::FactId::from("fact_gallery_closed")]
+    );
 }

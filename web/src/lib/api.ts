@@ -14,6 +14,8 @@ import type {
   SessionMode,
   SseMessage,
   TurnResult,
+  VisualGenerationMode,
+  VisualGenerationResult,
 } from '../types/api'
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
@@ -75,6 +77,10 @@ export const api = {
   generationJob: (jobId: string) => request<GenerationJob>(`/api/v1/case-generation/jobs/${encodeURIComponent(jobId)}`),
   cases: () => request<CaseSummary[]>('/api/v1/cases'),
   case: (caseId: string) => request<CaseDetail>(`/api/v1/cases/${encodeURIComponent(caseId)}`),
+  generateCaseVisuals: (caseId: string, mode: VisualGenerationMode) =>
+    request<VisualGenerationResult>(`/api/v1/cases/${encodeURIComponent(caseId)}/visuals/generate`, {
+      method: 'POST', body: JSON.stringify({ mode }),
+    }),
   createGame: (payload: { case_id: string; variant_selection: { mode: 'default' | 'random' } | { mode: 'specific'; variant_id: string }; seed?: number; mode: SessionMode }) =>
     request<CreateGameResponse>('/api/v1/games', { method: 'POST', body: JSON.stringify(payload) }),
   createSession: (caseId: string, mode: SessionMode, targetCharacterId?: string) =>

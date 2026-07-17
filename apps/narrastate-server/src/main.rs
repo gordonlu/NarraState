@@ -682,6 +682,17 @@ async fn cmd_serve(args: &[String]) {
         eprintln!("Failed to load cases directory '{cases_dir}': {error}");
         process::exit(1);
     }
+    match load_installed_case_sources(&repo).await {
+        Ok(warnings) => {
+            for warning in warnings {
+                tracing::warn!(detail = %warning, "installed case was left unavailable");
+            }
+        }
+        Err(error) => {
+            eprintln!("Failed to read the installed case index: {error}");
+            process::exit(1);
+        }
+    }
 
     let state = Arc::new(AppState::new(Arc::new(repo)));
     let index = std::path::Path::new(&web_dir).join("index.html");
@@ -756,6 +767,42 @@ async fn load_case_sources(repo: &dyn Repository, root: &std::path::Path) -> Res
         }
     }
     Ok(())
+}
+
+async fn load_installed_case_sources(repo: &dyn Repository) -> Result<Vec<String>, String> {
+    let mut warnings = Vec::new();
+    for record in repo
+        .list_installed_cases()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if let Err(error) = restore_installed_case_source(repo, &record).await {
+            warnings.push(format!(
+                "installed case {} {} at {}: {error}",
+                record.case_id, record.case_version, record.source_path
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
+async fn restore_installed_case_source(
+    repo: &dyn Repository,
+    record: &InstalledCaseRecord,
+) -> Result<(), String> {
+    let package = load_case_package(&record.source_path).map_err(|error| error.to_string())?;
+    if package.manifest.id != record.case_id
+        || package.manifest.version != record.case_version
+        || package.template_content_hash.as_ref() != record.template_content_hash
+    {
+        return Err("package identity or content hash does not match the installed index".into());
+    }
+    let compiled =
+        narrastate_case::compile(&package.template, &package.manifest.default_variant_id)
+            .map_err(|report| report.to_string())?;
+    repo.save_case(&compiled.definition)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn cmd_validate(args: &[String]) {
@@ -1161,4 +1208,85 @@ fn parse_evidence_attachments(input: &str) -> (String, Vec<EvidenceId>) {
     }
 
     (text.trim().to_string(), ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn installed_case_packages_are_restored_to_the_case_catalog() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cases/rain-gallery-variants");
+        let source_package = load_case_package(source).unwrap();
+        let install_root = std::env::temp_dir().join(format!(
+            "narrastate-installed-restore-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let installed = install_inline_package(
+            &source_package.manifest,
+            &source_package.template,
+            None,
+            &install_root,
+        )
+        .unwrap();
+        let repo = SqliteRepository::new_in_memory().await.unwrap();
+        repo.install_case(&InstalledCaseRecord {
+            case_id: source_package.manifest.id.clone(),
+            case_version: source_package.manifest.version.clone(),
+            source_path: installed.root.to_string_lossy().into_owned(),
+            schema_version: source_package.manifest.schema_version.clone(),
+            template_content_hash: installed.template_content_hash.to_string(),
+        })
+        .await
+        .unwrap();
+
+        assert!(repo.load_case(&source_package.manifest.id).await.is_err());
+        assert!(load_installed_case_sources(&repo).await.unwrap().is_empty());
+        assert_eq!(
+            repo.load_case(&source_package.manifest.id)
+                .await
+                .unwrap()
+                .title,
+            source_package.manifest.title
+        );
+
+        std::fs::remove_dir_all(install_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_installed_package_is_reported_without_blocking_startup() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cases/rain-gallery-variants");
+        let source_package = load_case_package(source).unwrap();
+        let install_root = std::env::temp_dir().join(format!(
+            "narrastate-invalid-installed-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let installed = install_inline_package(
+            &source_package.manifest,
+            &source_package.template,
+            None,
+            &install_root,
+        )
+        .unwrap();
+        let repo = SqliteRepository::new_in_memory().await.unwrap();
+        repo.install_case(&InstalledCaseRecord {
+            case_id: source_package.manifest.id.clone(),
+            case_version: source_package.manifest.version.clone(),
+            source_path: installed.root.to_string_lossy().into_owned(),
+            schema_version: source_package.manifest.schema_version.clone(),
+            template_content_hash: installed.template_content_hash.to_string(),
+        })
+        .await
+        .unwrap();
+        std::fs::write(installed.root.join("case.json"), "{}\n").unwrap();
+
+        let warnings = load_installed_case_sources(&repo).await.unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("rain-gallery-variants"));
+        assert!(repo.load_case(&source_package.manifest.id).await.is_err());
+
+        std::fs::remove_dir_all(install_root).unwrap();
+    }
 }

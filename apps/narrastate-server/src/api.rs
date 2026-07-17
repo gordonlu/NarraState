@@ -15,14 +15,16 @@ use axum::{Json, Router};
 use narrastate_case::{
     adapt_v01, compile, default_visual_specs, freeze_case, generate_optional_visuals,
     install_inline_package, install_inline_package_with_visuals, load_case_package,
-    run_generation_pipeline_with_id, select_variant, VariantCandidate,
+    run_generation_pipeline_with_id, select_variant, update_installed_visuals,
+    GeneratedVisualOutput, LoadedCasePackage, VariantCandidate,
 };
 use narrastate_core::case::CaseDefinition;
 use narrastate_core::character::CharacterRuntimeState;
 use narrastate_core::evidence::{DiscoveryRule, EvidenceDefinition};
-use narrastate_core::fact::{Fact, FactVisibility};
+use narrastate_core::fact::{Fact, FactValue, FactVisibility};
 use narrastate_core::id::{
     CaseId, CaseInstanceId, CharacterId, ClientActionId, EvidenceId, SessionId, TurnId, VariantId,
+    VisualAssetId,
 };
 use narrastate_core::session::{
     Accusation, AccusationResult, DialogueEntry, DialogueSpeaker, NarrativeEvent,
@@ -37,7 +39,9 @@ use narrastate_provider::case_generation::OpenAiCompatibleCaseGenerationProvider
 use narrastate_provider::image_generation::OpenAiCompatibleImageProvider;
 use narrastate_provider::interpreter::LlmInterpreter;
 use narrastate_provider::openai_compatible::OpenAiProvider;
-use narrastate_provider::renderer::{LlmRenderer, RendererContext, RendererStatus};
+use narrastate_provider::renderer::{
+    contextual_fallback, LlmRenderer, RendererContext, RendererStatus,
+};
 use narrastate_runtime::evaluator::covered_elements;
 use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
 use narrastate_runtime::ports::{
@@ -71,6 +75,8 @@ pub struct AppState {
     ephemeral_api_key: RwLock<Option<String>>,
     image_provider_env_path: PathBuf,
     ephemeral_image_api_key: RwLock<Option<String>>,
+    image_provider_override: RwLock<Option<Arc<dyn ImageGenerationProvider>>>,
+    visual_generation_lock: Mutex<()>,
     generation_provider_override: RwLock<Option<Arc<dyn CaseGenerationProvider>>>,
 }
 
@@ -180,6 +186,8 @@ impl AppState {
             ephemeral_api_key: RwLock::new(persisted_api_key),
             image_provider_env_path,
             ephemeral_image_api_key: RwLock::new(persisted_image_api_key),
+            image_provider_override: RwLock::new(None),
+            visual_generation_lock: Mutex::new(()),
             generation_provider_override: RwLock::new(None),
         }
     }
@@ -250,6 +258,9 @@ impl AppState {
     }
 
     async fn image_provider(&self) -> Option<Arc<dyn ImageGenerationProvider>> {
+        if let Some(provider) = self.image_provider_override.read().await.clone() {
+            return Some(provider);
+        }
         let settings = match self.repo.load_image_provider_settings().await {
             Ok(Some(settings)) => settings,
             Ok(None) => return None,
@@ -334,6 +345,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/cases", get(list_cases))
         .route("/api/v1/cases/{case_id}", get(get_case))
+        .route(
+            "/api/v1/cases/{case_id}/visuals/generate",
+            post(generate_case_visuals),
+        )
         .route(
             "/api/v1/cases/{case_id}/visuals/{visual_id}",
             get(get_case_visual),
@@ -457,6 +472,7 @@ struct PublicConfig {
     base_url: String,
     model: String,
     api_key: &'static str,
+    developer_mode: bool,
     image_provider: PublicImageProviderConfig,
 }
 
@@ -545,6 +561,37 @@ struct PublicVisualAsset {
     alt_text: String,
 }
 
+#[derive(Clone, Serialize)]
+struct PublicVisualStatus {
+    requested: bool,
+    generated: usize,
+    state: &'static str,
+    failure_code: Option<&'static str>,
+    failure_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VisualGenerationMode {
+    AppendMissing,
+    RegenerateAll,
+}
+
+#[derive(Deserialize)]
+struct GenerateCaseVisualsRequest {
+    mode: VisualGenerationMode,
+}
+
+#[derive(Serialize)]
+struct GenerateCaseVisualsResponse {
+    mode: VisualGenerationMode,
+    attempted: usize,
+    updated: usize,
+    failed: usize,
+    total: usize,
+    visual_status: PublicVisualStatus,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct PublicEvidence {
     id: EvidenceId,
@@ -562,6 +609,7 @@ struct PublicCase {
     evidence: Vec<PublicEvidence>,
     characters: Vec<PublicCharacter>,
     visual_assets: Vec<PublicVisualAsset>,
+    visual_status: Option<PublicVisualStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -730,6 +778,7 @@ async fn public_config(State(state): State<Arc<AppState>>) -> Result<Json<Public
         base_url: settings.base_url,
         model: settings.model,
         api_key: if configured { "********" } else { "" },
+        developer_mode: developer_mode_enabled(),
         image_provider: PublicImageProviderConfig {
             enabled: image_settings.enabled,
             configured: image_configured,
@@ -1135,6 +1184,13 @@ async fn complete_generation_job(
                     return Ok(Json(generation_job_json(&record)?));
                 }
             };
+            let default = compile(&success.template, &success.template.default_variant_id)
+                .map_err(|report| ApiError::internal(report.to_string()))?;
+            state
+                .repo
+                .save_case(&default.definition)
+                .await
+                .map_err(ApiError::from_storage)?;
             state
                 .repo
                 .install_case(&InstalledCaseRecord {
@@ -1283,7 +1339,7 @@ async fn get_generation_report(
 }
 
 fn generation_job_json(record: &GenerationJobRecord) -> Result<serde_json::Value, ApiError> {
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "job_id": record.job_id,
         "status": record.status,
         "attempt_count": record.attempt_count,
@@ -1293,7 +1349,17 @@ fn generation_job_json(record: &GenerationJobRecord) -> Result<serde_json::Value
         "result_path": record.result_path,
         "events": serde_json::from_str::<serde_json::Value>(&record.status_events_json).map_err(|e| ApiError::internal(e.to_string()))?,
         "updated_at": record.updated_at,
-    }))
+    });
+    if let Some(result_path) = &record.result_path {
+        let package = load_case_package(result_path).map_err(|error| {
+            ApiError::internal(format!(
+                "completed generation package at {result_path} could not be loaded: {error}"
+            ))
+        })?;
+        response["case_id"] = serde_json::json!(package.manifest.id);
+        response["case_version"] = serde_json::json!(package.manifest.version);
+    }
+    Ok(response)
 }
 
 async fn list_cases(
@@ -1333,7 +1399,12 @@ async fn list_cases(
                             .visual_assets
                             .iter()
                             .find(|asset| asset.visual_type == GeneratedVisualType::CaseCover)
-                            .map(|asset| format!("/api/v1/cases/{}/visuals/{}", case.id, asset.id))
+                            .map(|asset| {
+                                format!(
+                                    "/api/v1/cases/{}/visuals/{}?v={}",
+                                    case.id, asset.id, asset.content_hash
+                                )
+                            })
                     });
                 CaseSummary {
                     id: case.id,
@@ -1347,6 +1418,148 @@ async fn list_cases(
             })
             .collect(),
     ))
+}
+
+async fn generate_case_visuals(
+    State(state): State<Arc<AppState>>,
+    Path(case_id): Path<String>,
+    Json(request): Json<GenerateCaseVisualsRequest>,
+) -> Result<Json<GenerateCaseVisualsResponse>, ApiError> {
+    let _generation_guard = state.visual_generation_lock.lock().await;
+    let case_id = CaseId::from(case_id);
+    let installed = state
+        .repo
+        .list_installed_cases()
+        .await
+        .map_err(ApiError::from_storage)?;
+    let record = select_installed_case(&installed, &case_id, None)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("installed case {case_id}")))?;
+    let package = load_case_package(&record.source_path)
+        .map_err(|error| ApiError::validation(error.to_string()))?;
+    if !package.manifest.generated {
+        return Err(ApiError::validation(
+            "visual generation is available only for generated cases",
+        ));
+    }
+    if package.template_content_hash.as_ref() != record.template_content_hash {
+        return Err(ApiError::internal(format!(
+            "installed case {} {} content hash differs from its index",
+            record.case_id, record.case_version
+        )));
+    }
+
+    let mut report = load_generation_report_value(&package)?;
+    let original_report = report.clone();
+    let setting = report
+        .pointer("/request/setting")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let existing_outputs = load_installed_visual_outputs(&package)?;
+    let mut final_outputs: BTreeMap<VisualAssetId, GeneratedVisualOutput> = existing_outputs
+        .iter()
+        .cloned()
+        .map(|output| (output.manifest.id.clone(), output))
+        .collect();
+    let targets = default_visual_specs(&package.template, &setting)
+        .into_iter()
+        .filter(|spec| {
+            matches!(request.mode, VisualGenerationMode::RegenerateAll)
+                || !final_outputs.contains_key(&spec.id)
+        })
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        let visual_status = load_public_visual_status(&package).map_err(ApiError::internal)?;
+        return Ok(Json(GenerateCaseVisualsResponse {
+            mode: request.mode,
+            attempted: 0,
+            updated: 0,
+            failed: 0,
+            total: final_outputs.len(),
+            visual_status,
+        }));
+    }
+
+    let provider = state.image_provider().await.ok_or_else(|| {
+        ApiError::validation("image provider is not configured or could not be initialized")
+    })?;
+    let attempted = targets.len();
+    let generated = generate_optional_visuals(Some(provider.as_ref()), &targets).await;
+    let updated = generated.outputs.len();
+    let failed = attempted.saturating_sub(updated);
+    for output in generated.outputs {
+        final_outputs.insert(output.manifest.id.clone(), output);
+    }
+    let final_outputs = final_outputs.into_values().collect::<Vec<_>>();
+    report["visuals"] = serde_json::json!({
+        "requested": true,
+        "generated": final_outputs.len(),
+        "warnings": generated.warnings,
+        "last_operation": match request.mode {
+            VisualGenerationMode::AppendMissing => "append_missing",
+            VisualGenerationMode::RegenerateAll => "regenerate_all",
+        },
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let updated_package = update_installed_visuals(&package.root, &final_outputs, &report)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let updated_record = InstalledCaseRecord {
+        case_id: record.case_id.clone(),
+        case_version: record.case_version.clone(),
+        source_path: updated_package.root.to_string_lossy().into_owned(),
+        schema_version: record.schema_version.clone(),
+        template_content_hash: updated_package.template_content_hash.to_string(),
+    };
+    if let Err(storage_error) = state
+        .repo
+        .update_installed_case_visuals(&updated_record)
+        .await
+    {
+        let rollback =
+            update_installed_visuals(&updated_package.root, &existing_outputs, &original_report);
+        return Err(ApiError::internal(match rollback {
+            Ok(_) => format!("update installed visual index: {storage_error}"),
+            Err(rollback_error) => format!(
+                "update installed visual index: {storage_error}; rollback failed: {rollback_error}"
+            ),
+        }));
+    }
+    let visual_status = load_public_visual_status(&updated_package).map_err(ApiError::internal)?;
+    Ok(Json(GenerateCaseVisualsResponse {
+        mode: request.mode,
+        attempted,
+        updated,
+        failed,
+        total: final_outputs.len(),
+        visual_status,
+    }))
+}
+
+fn load_generation_report_value(
+    package: &LoadedCasePackage,
+) -> Result<serde_json::Value, ApiError> {
+    let bytes = fs::read(package.root.join("generation-report.json"))
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    serde_json::from_slice(&bytes).map_err(|error| ApiError::internal(error.to_string()))
+}
+
+fn load_installed_visual_outputs(
+    package: &LoadedCasePackage,
+) -> Result<Vec<GeneratedVisualOutput>, ApiError> {
+    package
+        .manifest
+        .visual_assets
+        .iter()
+        .map(|manifest| {
+            let bytes = fs::read(package.root.join(&manifest.path))
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            Ok(GeneratedVisualOutput {
+                manifest: manifest.clone(),
+                bytes,
+            })
+        })
+        .collect()
 }
 
 async fn get_case_visual(
@@ -1403,7 +1616,7 @@ async fn get_case(
         .list_installed_cases()
         .await
         .map_err(ApiError::from_storage)?;
-    let visual_assets = installed
+    let installed_packages = installed
         .iter()
         .filter(|record| record.case_id == case.id)
         .filter_map(|record| match load_case_package(&record.source_path) {
@@ -1417,8 +1630,32 @@ async fn get_case(
                 None
             }
         })
-        .flat_map(|package| package.manifest.visual_assets.into_iter())
         .collect::<Vec<_>>();
+    let visual_assets = installed_packages
+        .iter()
+        .flat_map(|package| package.manifest.visual_assets.iter().cloned())
+        .collect::<Vec<_>>();
+    let visual_status = installed_packages
+        .iter()
+        .rev()
+        .find(|package| package.manifest.generated)
+        .map(|package| match load_public_visual_status(package) {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::warn!(
+                    case_id = %case.id,
+                    %error,
+                    "generated case visual report could not be read"
+                );
+                PublicVisualStatus {
+                    requested: true,
+                    generated: package.manifest.visual_assets.len(),
+                    state: "unavailable",
+                    failure_code: Some("report_unavailable"),
+                    failure_detail: None,
+                }
+            }
+        });
     let portraits: BTreeMap<CharacterId, String> = visual_assets
         .iter()
         .filter(|asset| asset.visual_type == GeneratedVisualType::CharacterPortrait)
@@ -1426,7 +1663,10 @@ async fn get_case(
             asset.id.as_ref().strip_prefix("character-").map(|id| {
                 (
                     CharacterId::from(id),
-                    format!("/api/v1/cases/{}/visuals/{}", case.id, asset.id),
+                    format!(
+                        "/api/v1/cases/{}/visuals/{}?v={}",
+                        case.id, asset.id, asset.content_hash
+                    ),
                 )
             })
         })
@@ -1434,7 +1674,10 @@ async fn get_case(
     let public_visuals = visual_assets
         .into_iter()
         .map(|asset| PublicVisualAsset {
-            url: format!("/api/v1/cases/{}/visuals/{}", case.id, asset.id),
+            url: format!(
+                "/api/v1/cases/{}/visuals/{}?v={}",
+                case.id, asset.id, asset.content_hash
+            ),
             id: asset.id,
             visual_type: asset.visual_type,
             alt_text: asset.alt_text,
@@ -1444,6 +1687,7 @@ async fn get_case(
         &case,
         &portraits,
         public_visuals,
+        visual_status,
     )))
 }
 
@@ -1751,10 +1995,13 @@ fn random_seed() -> u64 {
     )
 }
 
+fn developer_mode_enabled() -> bool {
+    std::env::var("NARRASTATE_DEVELOPER_MODE")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true") || value == "1")
+}
+
 fn specific_variant_allowed() -> bool {
-    cfg!(debug_assertions)
-        || std::env::var("NARRASTATE_DEVELOPER_MODE")
-            .is_ok_and(|value| value.eq_ignore_ascii_case("true") || value == "1")
+    cfg!(test) || developer_mode_enabled()
 }
 
 async fn get_session(
@@ -1863,7 +2110,7 @@ async fn get_conclusion(
             .facts
             .iter()
             .filter(|fact| fact.truth == narrastate_core::fact::TruthValue::True)
-            .cloned()
+            .map(|fact| player_facing_fact(&case, fact))
             .collect(),
         decisive_evidence,
         reasoning: accusation.reasoning.clone(),
@@ -2095,17 +2342,17 @@ async fn execute_action(
             (speaker, entry.text.clone())
         })
         .collect::<Vec<_>>();
+    let renderer_context = RendererContext {
+        locale: &case.locale,
+        facts: &case.facts,
+        recent_dialogue: &recent,
+        latest_player_message: &request.text,
+    };
     let utterance = match session.mode {
         SessionMode::Mock => state.mock_renderer.render(&plan).utterance,
         SessionMode::Llm => match state.llm_provider().await {
             Ok((provider, settings)) => {
                 let started = Instant::now();
-                let renderer_context = RendererContext {
-                    locale: &case.locale,
-                    facts: &case.facts,
-                    recent_dialogue: &recent,
-                    latest_player_message: &request.text,
-                };
                 let (output, status, usage) = LlmRenderer::new(provider)
                     .render_validated_with_usage(&plan, character, &renderer_context)
                     .await;
@@ -2132,9 +2379,7 @@ async fn execute_action(
             }
             Err(_) => {
                 degraded = true;
-                narrastate_provider::validator::OutputValidator::new()
-                    .template_fallback(&plan)
-                    .utterance
+                contextual_fallback(&plan, character, &renderer_context).utterance
             }
         },
     };
@@ -2527,13 +2772,14 @@ fn new_session(
 
 #[cfg(test)]
 fn public_case(case: &CaseDefinition) -> PublicCase {
-    public_case_with_visuals(case, &BTreeMap::new(), Vec::new())
+    public_case_with_visuals(case, &BTreeMap::new(), Vec::new(), None)
 }
 
 fn public_case_with_visuals(
     case: &CaseDefinition,
     portraits: &BTreeMap<CharacterId, String>,
     visual_assets: Vec<PublicVisualAsset>,
+    visual_status: Option<PublicVisualStatus>,
 ) -> PublicCase {
     let evidence = case
         .evidence
@@ -2554,7 +2800,7 @@ fn public_case_with_visuals(
             .facts
             .iter()
             .filter(|fact| fact.visibility == FactVisibility::PublicAtStart)
-            .cloned()
+            .map(|fact| player_facing_fact(case, fact))
             .collect(),
         evidence,
         characters: case
@@ -2569,7 +2815,155 @@ fn public_case_with_visuals(
             })
             .collect(),
         visual_assets,
+        visual_status,
     }
+}
+
+fn player_facing_fact(case: &CaseDefinition, fact: &Fact) -> Fact {
+    let mut public = fact.clone();
+    if public.display_text.as_deref().is_none_or(str::is_empty) {
+        let subject = resolve_public_name(case, fact.subject.as_ref());
+        let object = match &fact.object {
+            FactValue::String(value) => resolve_public_name(case, value),
+            FactValue::Entity(value) => resolve_public_name(case, value.as_ref()),
+            FactValue::Number(value) if value.fract() == 0.0 => format!("{value:.0}"),
+            FactValue::Number(value) => value.to_string(),
+            FactValue::Boolean(true) => "是".into(),
+            FactValue::Boolean(false) => "否".into(),
+        };
+        let predicate = match fact.predicate.as_str() {
+            "has" => "设有".into(),
+            "contains" => "存放着".into(),
+            "is" => "是".into(),
+            "owns" => "拥有".into(),
+            "located_at" => "位于".into(),
+            "works_at" => "任职于".into(),
+            "was_at" => "曾在".into(),
+            value => value.replace('_', " "),
+        };
+        public.display_text = Some(if predicate.is_ascii() {
+            format!("{subject} {predicate} {object}")
+        } else {
+            format!("{subject}{predicate}{object}")
+        });
+    }
+    public
+}
+
+fn resolve_public_name(case: &CaseDefinition, value: &str) -> String {
+    case.entities
+        .iter()
+        .find(|entity| entity.id == value)
+        .map(|entity| entity.name.clone())
+        .or_else(|| {
+            case.characters
+                .iter()
+                .find(|character| character.id.as_ref() == value)
+                .map(|character| character.name.clone())
+        })
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn load_public_visual_status(package: &LoadedCasePackage) -> Result<PublicVisualStatus, String> {
+    let bytes =
+        fs::read(package.root.join("generation-report.json")).map_err(|error| error.to_string())?;
+    let report: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let visuals = report
+        .get("visuals")
+        .ok_or_else(|| "generation report is missing visuals".to_string())?;
+    let requested = visuals
+        .get("requested")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let generated = visuals
+        .get("generated")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(package.manifest.visual_assets.len() as u64) as usize;
+    let warnings = visuals
+        .get("warnings")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    let failure_code = warnings.first().map(|_| {
+        if warnings
+            .iter()
+            .any(|warning| warning.contains("404 Not Found"))
+        {
+            "endpoint_not_found"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("Authentication failed"))
+        {
+            "unauthorized"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("Rate limited"))
+        {
+            "rate_limited"
+        } else if warnings.iter().any(|warning| warning.contains("timed out")) {
+            "timeout"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("400 Bad Request"))
+        {
+            "bad_request"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("403 Forbidden"))
+        {
+            "forbidden"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("missing data[0].b64_json"))
+        {
+            "incompatible_response"
+        } else if warnings
+            .iter()
+            .any(|warning| warning.contains("VISUAL_PROVIDER_NOT_CONFIGURED"))
+        {
+            "not_configured"
+        } else {
+            "provider_failed"
+        }
+    });
+    let failure_detail = warnings.first().map(|warning| {
+        let without_provider_prefix = warning
+            .strip_prefix("VISUAL_PROVIDER_FAILED:")
+            .unwrap_or(warning);
+        let detail = without_provider_prefix
+            .strip_prefix("Invalid response from model: ")
+            .unwrap_or(without_provider_prefix);
+        let detail = detail
+            .rsplit_once(':')
+            .filter(|(_, suffix)| {
+                !suffix.is_empty()
+                    && suffix
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            })
+            .map(|(message, _)| message)
+            .unwrap_or(detail);
+        detail.chars().take(280).collect::<String>()
+    });
+    let state = if !requested {
+        "not_requested"
+    } else if generated == 0 {
+        "unavailable"
+    } else if failure_code.is_some() {
+        "partial"
+    } else {
+        "ready"
+    };
+    Ok(PublicVisualStatus {
+        requested,
+        generated,
+        state,
+        failure_code,
+        failure_detail,
+    })
 }
 
 fn public_session(session: &SessionState, case: &CaseDefinition) -> PublicSession {
@@ -2584,7 +2978,7 @@ fn public_session(session: &SessionState, case: &CaseDefinition) -> PublicSessio
             .facts
             .iter()
             .filter(|fact| session.discovered_facts.contains(&fact.id))
-            .cloned()
+            .map(|fact| player_facing_fact(case, fact))
             .collect(),
         discovered_evidence: case
             .evidence
@@ -2773,8 +3167,41 @@ fn turn_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use narrastate_case::load_case_package;
+    use narrastate_case::{compile, install_inline_package, load_case_package};
+    use narrastate_runtime::ports::{GeneratedImageAsset, ImageGenerationRequest};
     use narrastate_storage::SqliteRepository;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SuccessfulImageProvider(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl ImageGenerationProvider for SuccessfulImageProvider {
+        async fn generate_image(
+            &self,
+            _request: &ImageGenerationRequest,
+        ) -> Result<GeneratedImageAsset, ProviderError> {
+            let sequence = self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(GeneratedImageAsset {
+                mime_type: "image/png".into(),
+                bytes: format!("mock-image-{sequence}").into_bytes(),
+            })
+        }
+    }
+
+    struct FailingImageProvider;
+
+    #[async_trait::async_trait]
+    impl ImageGenerationProvider for FailingImageProvider {
+        async fn generate_image(
+            &self,
+            _request: &ImageGenerationRequest,
+        ) -> Result<GeneratedImageAsset, ProviderError> {
+            Err(ProviderError::InvalidResponse(
+                "image endpoint returned 400 Bad Request: model does not support image generation"
+                    .into(),
+            ))
+        }
+    }
 
     #[test]
     fn generation_provider_uses_a_long_but_bounded_timeout() {
@@ -3150,6 +3577,10 @@ mod tests {
             .0;
         assert_eq!(detail.id, case.id);
         assert_eq!(detail.characters.len(), case.characters.len());
+        assert!(detail.facts.iter().all(|fact| fact
+            .display_text
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())));
 
         let session_id = session.session_id.to_string();
         let public_session = get_session(State(state.clone()), Path(session_id.clone()))
@@ -3416,6 +3847,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generated_case_visuals_can_be_appended_and_regenerated_without_live_api() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cases/rain-gallery-variants");
+        let source_package = load_case_package(source).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("narrastate-visual-regeneration-{}", Uuid::new_v4()));
+        let mut manifest = source_package.manifest.clone();
+        manifest.generated = true;
+        manifest.visual_assets.clear();
+        let generation_report = serde_json::json!({
+            "request": {"setting": "现代画廊"},
+            "visuals": {"requested": false, "generated": 0, "warnings": []}
+        });
+        let installed = install_inline_package(
+            &manifest,
+            &source_package.template,
+            Some(&generation_report),
+            &root,
+        )
+        .unwrap();
+        let repo = Arc::new(SqliteRepository::new_in_memory().await.unwrap());
+        let compiled = compile(
+            &source_package.template,
+            &source_package.template.default_variant_id,
+        )
+        .unwrap();
+        repo.save_case(&compiled.definition).await.unwrap();
+        repo.install_case(&InstalledCaseRecord {
+            case_id: manifest.id.clone(),
+            case_version: manifest.version.clone(),
+            source_path: installed.root.to_string_lossy().into_owned(),
+            schema_version: manifest.schema_version.clone(),
+            template_content_hash: installed.template_content_hash.to_string(),
+        })
+        .await
+        .unwrap();
+        let state = Arc::new(AppState::with_install_root(repo.clone(), root.clone()));
+        *state.image_provider_override.write().await =
+            Some(Arc::new(SuccessfulImageProvider(AtomicUsize::new(0))));
+
+        let appended = generate_case_visuals(
+            State(state.clone()),
+            Path(manifest.id.to_string()),
+            Json(GenerateCaseVisualsRequest {
+                mode: VisualGenerationMode::AppendMissing,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(appended.attempted > 0);
+        assert_eq!(
+            appended.attempted,
+            2 + source_package.template.shared_characters.len(),
+            "default visual generation must only request cover, shared scene, and portraits"
+        );
+        assert_eq!(appended.updated, appended.attempted);
+        assert_eq!(appended.failed, 0);
+        assert_eq!(appended.total, appended.updated);
+        assert_eq!(appended.visual_status.state, "ready");
+        let first_hash = repo.list_installed_cases().await.unwrap()[0]
+            .template_content_hash
+            .clone();
+        let first_detail = get_case(State(state.clone()), Path(manifest.id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(first_detail.visual_assets.len(), appended.total);
+        let first_url = first_detail.visual_assets[0].url.clone();
+
+        let no_op = generate_case_visuals(
+            State(state.clone()),
+            Path(manifest.id.to_string()),
+            Json(GenerateCaseVisualsRequest {
+                mode: VisualGenerationMode::AppendMissing,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(no_op.attempted, 0);
+        assert_eq!(no_op.total, appended.total);
+
+        let regenerated = generate_case_visuals(
+            State(state.clone()),
+            Path(manifest.id.to_string()),
+            Json(GenerateCaseVisualsRequest {
+                mode: VisualGenerationMode::RegenerateAll,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(regenerated.updated, regenerated.attempted);
+        assert_eq!(regenerated.total, appended.total);
+        let second_hash = repo.list_installed_cases().await.unwrap()[0]
+            .template_content_hash
+            .clone();
+        assert_ne!(second_hash, first_hash);
+        let second_detail = get_case(State(state.clone()), Path(manifest.id.to_string()))
+            .await
+            .unwrap()
+            .0;
+        assert_ne!(second_detail.visual_assets[0].url, first_url);
+
+        *state.image_provider_override.write().await = Some(Arc::new(FailingImageProvider));
+        let failed_regeneration = generate_case_visuals(
+            State(state.clone()),
+            Path(manifest.id.to_string()),
+            Json(GenerateCaseVisualsRequest {
+                mode: VisualGenerationMode::RegenerateAll,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(failed_regeneration.updated, 0);
+        assert_eq!(failed_regeneration.failed, failed_regeneration.attempted);
+        assert_eq!(failed_regeneration.total, regenerated.total);
+        assert_eq!(failed_regeneration.visual_status.state, "partial");
+        assert_eq!(
+            failed_regeneration.visual_status.failure_code,
+            Some("bad_request")
+        );
+        assert_eq!(
+            failed_regeneration.visual_status.failure_detail.as_deref(),
+            Some(
+                "image endpoint returned 400 Bad Request: model does not support image generation"
+            )
+        );
+        assert_eq!(
+            repo.list_installed_cases().await.unwrap()[0].template_content_hash,
+            second_hash
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn generation_api_completes_with_mock_and_persists_report_without_live_api() {
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../cases/rain-gallery-variants");
@@ -3461,6 +4031,8 @@ mod tests {
             tokio::task::yield_now().await;
         };
         assert_eq!(response["status"], "completed");
+        assert_eq!(response["case_id"], "rain-gallery-variants");
+        assert_eq!(response["case_version"], "1.0.1");
         let public = response.to_string();
         assert!(!public.contains("responsible_character"));
         assert!(!public.contains("solution_variants"));
@@ -3468,6 +4040,19 @@ mod tests {
         let stored = state.repo.load_generation_job(&id).await.unwrap();
         assert_eq!(stored.status, GenerationStatus::Completed);
         assert!(stored.validation_report_json.is_some());
+        assert!(state
+            .repo
+            .load_case(&CaseId::from("rain-gallery-variants"))
+            .await
+            .is_ok());
+        let detail = get_case(State(state.clone()), Path("rain-gallery-variants".into()))
+            .await
+            .unwrap()
+            .0;
+        assert!(detail
+            .visual_status
+            .as_ref()
+            .is_some_and(|status| !status.requested && status.state == "not_requested"));
         assert!(root.join("rain-gallery-variants/1.0.1/case.json").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }

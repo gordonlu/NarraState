@@ -310,6 +310,10 @@ pub trait Repository: Send + Sync {
     async fn load_case(&self, case_id: &CaseId) -> Result<CaseDefinition, StorageError>;
     async fn list_cases(&self) -> Result<Vec<CaseDefinition>, StorageError>;
     async fn install_case(&self, case: &InstalledCaseRecord) -> Result<(), StorageError>;
+    async fn update_installed_case_visuals(
+        &self,
+        case: &InstalledCaseRecord,
+    ) -> Result<(), StorageError>;
     async fn list_installed_cases(&self) -> Result<Vec<InstalledCaseRecord>, StorageError>;
     async fn save_case_instance(&self, instance: &CaseInstance) -> Result<(), StorageError>;
     async fn load_case_instance(

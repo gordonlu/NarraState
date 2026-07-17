@@ -43,6 +43,70 @@ fn make_action(
 }
 
 #[test]
+fn attached_evidence_does_not_turn_an_ordinary_question_into_a_defense_response() {
+    let case = load_case();
+    let character = case
+        .characters
+        .iter()
+        .find(|character| !character.defenses.is_empty())
+        .expect("golden case should contain a defensive character");
+    let evidence_map = case
+        .evidence
+        .iter()
+        .map(|item| (item.id.clone(), item.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let evidence_id = case.evidence[0].id.clone();
+    let action = make_action(
+        "你最后一次见到他们是什么时候？",
+        vec![evidence_id],
+        PlayerIntent::Ask,
+    );
+
+    let plan = DialoguePlanner.plan(
+        &action,
+        &CharacterRuntimeState::new(character.resilience),
+        character,
+        &evidence_map,
+    );
+
+    assert_eq!(plan.act, narrastate_core::DialogueAct::Answer);
+}
+
+#[test]
+fn direct_accusation_can_use_a_defense_without_a_mapped_claim_id() {
+    let case = load_case();
+    let character = case
+        .characters
+        .iter()
+        .find(|character| {
+            character
+                .defenses
+                .iter()
+                .any(|strategy| strategy.kind == narrastate_core::DefenseStrategyKind::Denial)
+        })
+        .expect("golden case should contain a denial defense");
+    let evidence_map = case
+        .evidence
+        .iter()
+        .map(|item| (item.id.clone(), item.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let action = make_action(
+        "只有你有机会，所以就是你做的。",
+        vec![],
+        PlayerIntent::Accuse,
+    );
+
+    let plan = DialoguePlanner.plan(
+        &action,
+        &CharacterRuntimeState::new(character.resilience),
+        character,
+        &evidence_map,
+    );
+
+    assert_eq!(plan.act, narrastate_core::DialogueAct::Deny);
+}
+
+#[test]
 fn smoke_full_luo_cheng_interrogation() {
     let case = load_case();
     let culprit = case

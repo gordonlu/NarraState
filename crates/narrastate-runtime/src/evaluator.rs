@@ -159,6 +159,7 @@ impl EvidenceEvaluator {
                         node.kind,
                         narrastate_core::DisclosureKind::PartialAction
                             | narrastate_core::DisclosureKind::FullAction
+                            | narrastate_core::DisclosureKind::Intent
                     )
             })
         });
@@ -237,12 +238,82 @@ fn next_phase(
     use InterrogationPhase::*;
     match current {
         Calm if stress >= 15 || cracks > 0 || matches!(intent, PlayerIntent::Accuse) => Guarded,
-        Guarded if stress >= 30 || cracks >= 1 => Defensive,
-        Defensive if stress >= 50 && defense <= 65 => Pressured,
-        Pressured if stress >= 70 && cracks >= 2 => Cornered,
+        Guarded
+            if stress >= 30
+                || cracks >= 1
+                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+        {
+            Defensive
+        }
+        Defensive
+            if (stress >= 50 && defense <= 65)
+                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+        {
+            Pressured
+        }
+        Pressured
+            if (stress >= 70 && cracks >= 2)
+                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+        {
+            Cornered
+        }
         Cornered if has_confession_path && elements_complete && action_disclosed => {
             ConfessionEligible
         }
         _ => current,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_phase;
+    use narrastate_core::{InterrogationPhase, PlayerIntent};
+
+    #[test]
+    fn decisive_follow_up_advances_one_phase_after_evidence_and_action_are_complete() {
+        let next = next_phase(
+            InterrogationPhase::Defensive,
+            0,
+            100,
+            0,
+            true,
+            true,
+            true,
+            PlayerIntent::Challenge,
+        );
+
+        assert_eq!(next, InterrogationPhase::Pressured);
+    }
+
+    #[test]
+    fn decisive_follow_up_cannot_advance_without_a_disclosed_action() {
+        let next = next_phase(
+            InterrogationPhase::Defensive,
+            0,
+            100,
+            0,
+            true,
+            false,
+            true,
+            PlayerIntent::Challenge,
+        );
+
+        assert_eq!(next, InterrogationPhase::Defensive);
+    }
+
+    #[test]
+    fn decisive_follow_up_can_advance_from_guarded_without_skipping_defensive() {
+        let next = next_phase(
+            InterrogationPhase::Guarded,
+            0,
+            100,
+            0,
+            true,
+            true,
+            true,
+            PlayerIntent::Challenge,
+        );
+
+        assert_eq!(next, InterrogationPhase::Defensive);
     }
 }

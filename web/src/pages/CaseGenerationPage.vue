@@ -175,6 +175,11 @@ async function generate() {
       await new Promise(resolve => setTimeout(resolve, 700))
       job.value = await api.generationJob(job.value.job_id)
     }
+    if (!stopped && job.value.status === 'completed') {
+      await router.replace(job.value.case_id
+        ? { name: 'case-brief', params: { caseId: job.value.case_id } }
+        : { name: 'cases' })
+    }
   } catch (error) {
     job.value = { job_id: '', status: 'failed', attempt_count: 0, repair_count: 0,
       error_message: error instanceof Error ? error.message : '生成失败', events: [], updated_at: '' }

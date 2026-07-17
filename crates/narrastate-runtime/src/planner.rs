@@ -92,16 +92,15 @@ impl DialoguePlanner {
             }
         }
 
-        if !action.evidence_usage.is_empty()
-            || matches!(
-                action.intent,
-                PlayerIntent::Challenge | PlayerIntent::Accuse
-            )
-        {
+        if matches!(
+            action.intent,
+            PlayerIntent::PresentEvidence | PlayerIntent::Challenge | PlayerIntent::Accuse
+        ) {
             if let Some(strategy) = character.defenses.iter().find(|strategy| {
                 strategy.usable_phases.contains(&state.phase)
                     && !state.exhausted_defenses.contains(&strategy.id)
-                    && (strategy.applicable_claims.is_empty()
+                    && (action.intent == PlayerIntent::Accuse
+                        || strategy.applicable_claims.is_empty()
                         || action
                             .referenced_claims
                             .iter()

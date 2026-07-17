@@ -366,6 +366,144 @@ pub fn install_inline_package_with_visuals(
     load_case_package(destination)
 }
 
+/// Atomically replaces the complete decorative visual set in an installed generated package.
+/// The case template is copied byte-for-byte through serialization and remains authoritative;
+/// only manifest visual entries, visual files, and the non-authoritative generation report change.
+pub fn update_installed_visuals(
+    package_root: impl AsRef<Path>,
+    visuals: &[GeneratedVisualOutput],
+    generation_report: &serde_json::Value,
+) -> Result<LoadedCasePackage, PackageError> {
+    let package_root = package_root.as_ref();
+    let existing = load_case_package(package_root)?;
+    if !existing.manifest.generated {
+        return Err(package_error(
+            "PACKAGE_VISUAL_UPDATE_UNSUPPORTED",
+            "manifest.json.generated",
+            "only generated case packages may update visuals in place",
+        ));
+    }
+    let mut manifest = existing.manifest.clone();
+    manifest.visual_assets = visuals
+        .iter()
+        .map(|output| output.manifest.clone())
+        .collect();
+    manifest
+        .visual_assets
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    validate_manifest_shape(&manifest)?;
+
+    let parent = package_root.parent().ok_or_else(|| {
+        package_error(
+            "PACKAGE_PATH_UNSAFE",
+            "$package",
+            "installed package must have a parent directory",
+        )
+    })?;
+    let name = package_root.file_name().ok_or_else(|| {
+        package_error(
+            "PACKAGE_PATH_UNSAFE",
+            "$package",
+            "installed package must have a directory name",
+        )
+    })?;
+    let nonce = uuid::Uuid::new_v4();
+    let temporary = parent.join(format!(".{}.visuals-{nonce}", name.to_string_lossy()));
+    let backup = parent.join(format!(".{}.backup-{nonce}", name.to_string_lossy()));
+
+    let write_result = (|| -> Result<(), PackageError> {
+        fs::create_dir(&temporary).map_err(|error| {
+            package_error("PACKAGE_WRITE_FAILED", "$package", error.to_string())
+        })?;
+        write_json(&temporary.join("manifest.json"), &manifest, "manifest.json")?;
+        write_json(
+            &temporary.join(&manifest.entry),
+            &existing.template,
+            &manifest.entry,
+        )?;
+        write_json(
+            &temporary.join("generation-report.json"),
+            generation_report,
+            "generation-report.json",
+        )?;
+
+        for asset in &manifest.assets {
+            copy_existing_asset(
+                package_root,
+                &temporary,
+                &asset.path,
+                "manifest.assets.path",
+            )?;
+        }
+        for visual in visuals {
+            write_asset_bytes(
+                &temporary,
+                &visual.manifest.path,
+                &visual.bytes,
+                "manifest.visual_assets.path",
+            )?;
+        }
+        load_case_package(&temporary)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        fs::remove_dir_all(&temporary).ok();
+        return Err(error);
+    }
+
+    fs::rename(package_root, &backup)
+        .map_err(|error| package_error("PACKAGE_WRITE_FAILED", "$package", error.to_string()))?;
+    if let Err(error) = fs::rename(&temporary, package_root) {
+        let restore = fs::rename(&backup, package_root);
+        return Err(package_error(
+            "PACKAGE_WRITE_FAILED",
+            "$package",
+            match restore {
+                Ok(()) => error.to_string(),
+                Err(restore_error) => {
+                    format!("{error}; restoring previous package failed: {restore_error}")
+                }
+            },
+        ));
+    }
+    fs::remove_dir_all(&backup).map_err(|error| {
+        package_error(
+            "PACKAGE_BACKUP_CLEANUP_FAILED",
+            "$package",
+            error.to_string(),
+        )
+    })?;
+    load_case_package(package_root)
+}
+
+fn copy_existing_asset(
+    source_root: &Path,
+    destination_root: &Path,
+    relative: &str,
+    field: &str,
+) -> Result<(), PackageError> {
+    let source = safe_file(source_root, relative, field)?;
+    let bytes = fs::read(source)
+        .map_err(|error| package_error("PACKAGE_READ_FAILED", field, error.to_string()))?;
+    write_asset_bytes(destination_root, relative, &bytes, field)
+}
+
+fn write_asset_bytes(
+    root: &Path,
+    relative: &str,
+    bytes: &[u8],
+    field: &str,
+) -> Result<(), PackageError> {
+    let relative = safe_relative_path(relative, field)?;
+    let destination = root.join(relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| package_error("PACKAGE_WRITE_FAILED", field, error.to_string()))?;
+    }
+    fs::write(destination, bytes)
+        .map_err(|error| package_error("PACKAGE_WRITE_FAILED", field, error.to_string()))
+}
+
 fn safe_relative_path<'a>(value: &'a str, field: &str) -> Result<&'a Path, PackageError> {
     let path = Path::new(value);
     if path.is_absolute()

@@ -107,8 +107,10 @@ impl TransitionEngine {
 
         let invalidated = invalidated_claims(character, &state.confronted_evidence);
         let coverage = covered_elements(&state.confronted_evidence, evidence);
+        let elements_complete = required_elements.is_subset(&coverage);
         let effective_turn = evaluation.impact.is_some()
             || !evaluation.newly_contradicted_claims.is_empty()
+            || (elements_complete && action.intent == PlayerIntent::Challenge)
             || (state.phase == InterrogationPhase::ConfessionEligible
                 && matches!(
                     action.intent,
@@ -119,7 +121,7 @@ impl TransitionEngine {
             state,
             character,
             &invalidated,
-            required_elements.is_subset(&coverage),
+            elements_complete,
             effective_turn,
         );
         let transition_reason = if newly_revealed.is_some() {

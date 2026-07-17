@@ -60,7 +60,9 @@ pub struct MockRenderer;
 impl MockRenderer {
     pub fn render(&self, plan: &DialoguePlan) -> MockUtterance {
         let utterance = match plan.act {
-            narrastate_core::DialogueAct::Answer => "我会回答你的问题。".to_string(),
+            narrastate_core::DialogueAct::Answer => {
+                "你想确认的是时间、地点，还是当时具体发生的事？".to_string()
+            }
             narrastate_core::DialogueAct::Deny => "这不是真的，我否认这一点。".to_string(),
             narrastate_core::DialogueAct::Evade => "这件事我记得不太清楚。".to_string(),
             narrastate_core::DialogueAct::Reframe => "事情并不是你说的那样。".to_string(),

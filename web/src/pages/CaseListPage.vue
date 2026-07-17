@@ -31,7 +31,7 @@ onMounted(() => store.bootstrap())
       </div>
       <section v-else class="case-list" aria-label="可用案件">
         <RouterLink v-for="item in store.cases" :key="item.id" class="case-row" :to="`/cases/${item.id}`">
-          <div class="case-media">
+          <div class="case-media" :class="{ 'has-cover': Boolean(item.cover_url) }">
             <img v-if="item.cover_url" :src="item.cover_url" :alt="`${item.title}封面`" />
             <span v-else aria-hidden="true">{{ item.title.slice(0, 1) }}</span>
           </div>

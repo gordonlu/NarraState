@@ -1,6 +1,6 @@
 use narrastate_case::{
     adapt_v01, install_inline_package, install_inline_package_with_visuals, load_case_package,
-    migrate_v01_package, raw_content_hash, GeneratedVisualOutput,
+    migrate_v01_package, raw_content_hash, update_installed_visuals, GeneratedVisualOutput,
 };
 use narrastate_core::{
     AssetManifestEntry, AssetSemanticRole, CaseDefinition, CaseManifest, CaseTemplate, ContentHash,
@@ -420,4 +420,96 @@ fn reinstalling_same_version_with_changed_content_is_rejected() {
     changed.summary.push_str(" changed");
     let error = install_inline_package(&manifest, &changed, None, root.path()).unwrap_err();
     assert_eq!(error.code, "PACKAGE_OUTPUT_EXISTS");
+}
+
+#[test]
+fn generated_visuals_are_appended_and_replaced_atomically() {
+    let root = TempPackage::new();
+    let template = template();
+    let mut manifest = manifest(&template);
+    manifest.generated = true;
+    let original_bytes = b"original portrait".to_vec();
+    let original = GeneratedVisualOutput {
+        manifest: VisualAssetManifestEntry {
+            id: VisualAssetId::from("character-luo-cheng"),
+            path: "assets/visuals/character-luo-cheng.webp".into(),
+            content_hash: raw_content_hash(&original_bytes),
+            visual_type: GeneratedVisualType::CharacterPortrait,
+            semantic_role: AssetSemanticRole::Decorative,
+            alt_text: "原角色头像".into(),
+            shared_across_variants: true,
+        },
+        bytes: original_bytes,
+    };
+    manifest.visual_assets.push(original.manifest.clone());
+    let report = serde_json::json!({"visuals":{"requested":true,"generated":1,"warnings":[]}});
+    let installed = install_inline_package_with_visuals(
+        &manifest,
+        &template,
+        Some(&report),
+        &[original],
+        root.path(),
+    )
+    .unwrap();
+    let original_hash = installed.template_content_hash;
+
+    let replacement_bytes = b"new portrait".to_vec();
+    let cover_bytes = b"new cover".to_vec();
+    let replacements = vec![
+        GeneratedVisualOutput {
+            manifest: VisualAssetManifestEntry {
+                id: VisualAssetId::from("character-luo-cheng"),
+                path: "assets/visuals/character-luo-cheng.webp".into(),
+                content_hash: raw_content_hash(&replacement_bytes),
+                visual_type: GeneratedVisualType::CharacterPortrait,
+                semantic_role: AssetSemanticRole::Decorative,
+                alt_text: "新角色头像".into(),
+                shared_across_variants: true,
+            },
+            bytes: replacement_bytes.clone(),
+        },
+        GeneratedVisualOutput {
+            manifest: VisualAssetManifestEntry {
+                id: VisualAssetId::from("case-cover"),
+                path: "assets/visuals/case-cover.webp".into(),
+                content_hash: raw_content_hash(&cover_bytes),
+                visual_type: GeneratedVisualType::CaseCover,
+                semantic_role: AssetSemanticRole::Decorative,
+                alt_text: "新案件封面".into(),
+                shared_across_variants: true,
+            },
+            bytes: cover_bytes.clone(),
+        },
+    ];
+    let updated_report =
+        serde_json::json!({"visuals":{"requested":true,"generated":2,"warnings":[]}});
+    let updated =
+        update_installed_visuals(&installed.root, &replacements, &updated_report).unwrap();
+
+    assert_eq!(updated.manifest.visual_assets.len(), 2);
+    assert_ne!(updated.template_content_hash, original_hash);
+    assert_eq!(updated.template.title, template.title);
+    assert_eq!(
+        fs::read(updated.root.join("assets/visuals/character-luo-cheng.webp")).unwrap(),
+        replacement_bytes
+    );
+    assert_eq!(
+        fs::read(updated.root.join("assets/visuals/case-cover.webp")).unwrap(),
+        cover_bytes
+    );
+    let persisted_report: serde_json::Value =
+        serde_json::from_slice(&fs::read(updated.root.join("generation-report.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_report["visuals"]["generated"], 2);
+}
+
+#[test]
+fn authored_package_cannot_be_mutated_by_visual_regeneration() {
+    let root = TempPackage::new();
+    let template = template();
+    let manifest = manifest(&template);
+    let installed = install_inline_package(&manifest, &template, None, root.path()).unwrap();
+
+    let error = update_installed_visuals(&installed.root, &[], &serde_json::json!({})).unwrap_err();
+    assert_eq!(error.code, "PACKAGE_VISUAL_UPDATE_UNSUPPORTED");
 }

@@ -54,56 +54,7 @@ pub fn default_visual_specs(template: &CaseTemplate, setting: &str) -> Vec<Visua
             width: 1536,
             height: 1024,
         },
-        VisualGenerationSpec {
-            id: VisualAssetId::from("chapter-opening"),
-            visual_type: GeneratedVisualType::ChapterIllustration,
-            public_prompt: format!(
-                "{shared_context}。调查章节开场插画，表现即将开始调查的氛围，不出现责任人、证据、线索、文字或隐藏事实。"
-            ),
-            alt_text: "调查章节开场氛围图，不作为案件证据".into(),
-            width: 1536,
-            height: 1024,
-        },
-        VisualGenerationSpec {
-            id: VisualAssetId::from("transition-investigation"),
-            visual_type: GeneratedVisualType::TransitionIllustration,
-            public_prompt: format!(
-                "{shared_context}。调查过程的抽象转场插画，不出现人物、证据、线索、文字或真相暗示。"
-            ),
-            alt_text: "调查转场氛围图，不作为案件证据".into(),
-            width: 1536,
-            height: 1024,
-        },
-        VisualGenerationSpec {
-            id: VisualAssetId::from("ending-generic"),
-            visual_type: GeneratedVisualType::EndingIllustration,
-            public_prompt: format!(
-                "{shared_context}。案件调查结束后的通用收束氛围插画，不描绘责任人、结案方式、关键物品、证据、文字或具体真相。"
-            ),
-            alt_text: "案件结束氛围图，不作为案件证据".into(),
-            width: 1536,
-            height: 1024,
-        },
     ];
-    specs.extend(
-        template
-            .entities
-            .iter()
-            .filter(|entity| entity.kind.eq_ignore_ascii_case("location"))
-            .take(6)
-            .enumerate()
-            .map(|(index, location)| VisualGenerationSpec {
-                id: VisualAssetId::from(format!("location-{index}")),
-                visual_type: GeneratedVisualType::LocationAtmosphere,
-                public_prompt: format!(
-                    "{shared_context}。地点：{}。地点氛围示意图，不出现具体人物、关键物品位置、精确出入口结构、摄像头、密道、文字、证据或可用于时间线判断的细节。",
-                    location.name
-                ),
-                alt_text: format!("{}地点氛围图，不作为案件证据", location.name),
-                width: 1536,
-                height: 1024,
-            }),
-    );
     specs.extend(template.shared_characters.iter().map(|character| {
         VisualGenerationSpec {
             id: VisualAssetId::from(format!("character-{}", character.id)),

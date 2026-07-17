@@ -115,7 +115,7 @@ impl OutputValidator {
     pub fn template_fallback(&self, plan: &DialoguePlan) -> RendererOutput {
         use narrastate_core::DialogueAct::*;
         let utterance = match plan.act {
-            Answer => "我会回答你的问题。".into(),
+            Answer => "你想确认的是时间、地点，还是当时具体发生的事？".into(),
             Deny => "这不是真的，我否认这一点。".into(),
             Evade => "这件事我记得不太清楚。".into(),
             Reframe => "事情并不是你说的那样。".into(),
