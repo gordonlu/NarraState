@@ -385,7 +385,11 @@ function enterInvestigation() {
       <section ref="dialoguePanel" class="dialogue-panel workspace-dialogue">
         <img v-if="sceneVisual" class="dialogue-scene-backdrop" :src="sceneVisual.url" alt="" />
         <header class="dialogue-heading">
-          <div><span>正在与{{ store.activeCharacter?.name }}交谈</span><small>{{ store.activeCharacter?.role }}</small></div>
+          <div class="dialogue-heading-left">
+            <span class="dialogue-heading-avatar"><img v-if="store.activeCharacter?.portrait_url" :src="store.activeCharacter.portrait_url" alt="" /><template v-else>{{ (store.activeCharacter?.name ?? '?').slice(0, 1) }}</template></span>
+            <div class="dialogue-heading-info"><span>{{ store.activeCharacter?.name }}</span><small>{{ store.activeCharacter?.role }}</small></div>
+          </div>
+          <div class="dialogue-heading-turns"><span class="turn-dot" />{{ visibleConversation.filter((e) => typeof e.speaker !== 'string').length }} 轮询问</div>
           <button class="mobile-context-button" type="button" @click="mobileTab = 'people'">切换人物</button>
         </header>
         <div ref="transcript" class="transcript" aria-live="polite">
@@ -396,24 +400,51 @@ function enterInvestigation() {
             <button type="button" @click="question = '请从头说说，事情发生前后你做了什么？'">使用建议问题</button>
           </div>
           <article v-for="(entry, index) in visibleConversation" :key="`${entry.turn_id}-${entrySpeaker(entry)}`" class="transcript-turn" :class="{ player: speakerId(entry.speaker) === 'Player' }" :data-turn-index="index">
-            <header><span class="speaker-mark"><img v-if="entryPortrait(entry)" :src="entryPortrait(entry)" alt="" /><template v-else>{{ entrySpeaker(entry).slice(0, 1) }}</template></span><strong>{{ entrySpeaker(entry) }}</strong><time>回合 {{ entryTurnNumber(entry) }}</time></header>
-            <p>{{ entry.text }}</p>
-            <div v-if="entry.attached_evidence.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ entry.attached_evidence.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
+            <div class="bubble-meta">
+              <span class="speaker-mark"><img v-if="entryPortrait(entry)" :src="entryPortrait(entry)" alt="" /><template v-else>{{ entrySpeaker(entry).slice(0, 1) }}</template></span>
+              <strong>{{ entrySpeaker(entry) }}</strong>
+              <time>回合 {{ entryTurnNumber(entry) }}</time>
+            </div>
+            <div class="bubble-content">
+              {{ entry.text }}
+              <div v-if="entry.attached_evidence.length" class="turn-evidence-chips">
+                <span v-for="evId in entry.attached_evidence" :key="evId" class="evidence-chip"><AppIcon name="paperclip" :size="12" />{{ store.session?.discovered_evidence.find((item) => item.id === evId)?.title ?? evId }}</span>
+              </div>
+            </div>
           </article>
           <article v-if="visiblePendingQuestion" class="transcript-turn player pending-player-turn">
-            <header><span class="speaker-mark">你</span><strong>你</strong><time>回合 {{ pendingTurnNumber }}</time></header>
-            <p>{{ visiblePendingQuestion.text }}</p>
-            <div v-if="visiblePendingQuestion.attachedEvidenceIds.length" class="turn-attachments"><AppIcon name="paperclip" :size="16" />{{ visiblePendingQuestion.attachedEvidenceIds.map((id) => store.session?.discovered_evidence.find((item) => item.id === id)?.title ?? id).join('、') }}</div>
+            <div class="bubble-meta">
+              <span class="speaker-mark">你</span>
+              <strong>你</strong>
+              <time>回合 {{ pendingTurnNumber }}</time>
+            </div>
+            <div class="bubble-content">
+              {{ visiblePendingQuestion.text }}
+              <div v-if="visiblePendingQuestion.attachedEvidenceIds.length" class="turn-evidence-chips">
+                <span v-for="evId in visiblePendingQuestion.attachedEvidenceIds" :key="evId" class="evidence-chip"><AppIcon name="paperclip" :size="12" />{{ store.session?.discovered_evidence.find((item) => item.id === evId)?.title ?? evId }}</span>
+              </div>
+            </div>
           </article>
           <article v-if="store.streaming" class="transcript-turn streaming-turn">
-            <header><span class="speaker-mark streaming-mark"><img v-if="store.activeCharacter?.portrait_url" :src="store.activeCharacter.portrait_url" alt="" /><template v-else><i /><i /><i /></template></span><strong>{{ store.activeCharacter?.name }}</strong><time>{{ store.streamStage }}</time></header>
-            <p>{{ store.streamText }}<span class="stream-caret" /></p>
+            <div class="bubble-meta">
+              <span class="streaming-mark"><img v-if="store.activeCharacter?.portrait_url" :src="store.activeCharacter.portrait_url" alt="" /><template v-else><i /><i /><i /></template></span>
+              <strong>{{ store.activeCharacter?.name }}</strong>
+              <time>{{ store.streamStage }}</time>
+            </div>
+            <div class="bubble-content">
+              {{ store.streamText }}<span class="stream-caret" />
+            </div>
           </article>
         </div>
         <div class="composer-region" data-evidence-dropzone>
           <div class="attachment-summary"><span><AppIcon name="paperclip" :size="18" />已附加 {{ store.selectedEvidence.length }} 条线索<small>也可拖入此处</small></span><button type="button" @click="mobileTab = 'research'; selectResearchTab('evidence')">选择线索</button></div>
           <div v-if="store.selectedEvidence.length" class="attachment-list">
             <div v-for="item in store.selectedEvidence" :key="item.id" class="attachment-row" :data-evidence-attachment="item.id"><AppIcon name="document" /><span>{{ item.title }}</span><button type="button" :aria-label="`移除 ${item.title}`" @click="toggleEvidenceWithMotion(item.id)"><AppIcon name="close" :size="18" /></button></div>
+          </div>
+          <div class="composer-quick-actions">
+            <button class="quick-action-btn" type="button" :disabled="store.streaming" @click="question = '请从头详细说一遍当时的情况。'">追问详情</button>
+            <button class="quick-action-btn" type="button" :disabled="store.streaming" @click="question = '你这个说法有矛盾，请解释一下。'">指出矛盾</button>
+            <button class="quick-action-btn" type="button" :disabled="store.streaming" @click="question = '你对这件事还有什么要补充的吗？'">继续陈述</button>
           </div>
           <div class="composer-box">
             <textarea v-model="question" maxlength="2000" :disabled="store.streaming" placeholder="输入你的问题" @keydown="onComposerKeydown" />
