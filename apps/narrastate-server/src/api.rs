@@ -43,7 +43,7 @@ use narrastate_provider::renderer::{
     contextual_fallback, LlmRenderer, RendererContext, RendererStatus,
 };
 use narrastate_runtime::evaluator::covered_elements;
-use narrastate_runtime::mock::{MockInterpreter, MockRenderer};
+use narrastate_runtime::mock::MockInterpreter;
 use narrastate_runtime::ports::{
     CaseGenerationProvider, ChatMessage, CommitOutcome, GenerationJobRecord,
     GenerationProgressReporter, GenerationProgressStage, GenerationProgressUpdate,
@@ -69,7 +69,6 @@ pub struct AppState {
     engine: TransitionEngine,
     planner: DialoguePlanner,
     mock_interpreter: MockInterpreter,
-    mock_renderer: MockRenderer,
     install_root: PathBuf,
     provider_env_path: PathBuf,
     ephemeral_api_key: RwLock<Option<String>>,
@@ -178,7 +177,6 @@ impl AppState {
             engine: TransitionEngine::new(TransitionTuning::default()),
             planner: DialoguePlanner,
             mock_interpreter: MockInterpreter,
-            mock_renderer: MockRenderer,
             install_root: std::env::var("NARRASTATE_CASE_INSTALL_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("data/installed-cases")),
@@ -2087,20 +2085,33 @@ async fn get_conclusion(
         return Err(ApiError::validation("session has not been resolved"));
     }
     let case = case_for_session(&*state.repo, &session).await?;
-    let accusation = session
-        .accusations
-        .last()
-        .ok_or_else(|| ApiError::internal("resolved session has no accusation"))?;
-    let selected: BTreeSet<_> = accusation.evidence_ids.iter().collect();
-    let decisive_evidence = case
-        .evidence
-        .iter()
-        .filter(|item| selected.contains(&item.id))
-        .map(public_evidence)
-        .collect();
-    let confessed = accusation.result == AccusationResult::CaseProvenWithConfession;
+
+    let (result, decisive_evidence, reasoning, confessed) = if let Some(accusation) = session.accusations.last() {
+        let selected: BTreeSet<_> = accusation.evidence_ids.iter().collect();
+        let evidence = case
+            .evidence
+            .iter()
+            .filter(|item| selected.contains(&item.id))
+            .map(public_evidence)
+            .collect();
+        (
+            accusation.result.clone(),
+            evidence,
+            accusation.reasoning.clone(),
+            accusation.result == AccusationResult::CaseProvenWithConfession,
+        )
+    } else {
+        // Session resolved via dialogue confession (no accusation)
+        (
+            AccusationResult::CaseProvenWithConfession,
+            Vec::new(),
+            String::new(),
+            true,
+        )
+    };
+
     Ok(Json(ConclusionResponse {
-        result: accusation.result.clone(),
+        result,
         epilogue: case
             .ending
             .as_ref()
@@ -2113,7 +2124,7 @@ async fn get_conclusion(
             .map(|fact| player_facing_fact(&case, fact))
             .collect(),
         decisive_evidence,
-        reasoning: accusation.reasoning.clone(),
+        reasoning,
         confessed,
         turn_count: session.current_turn,
     }))
@@ -2349,7 +2360,10 @@ async fn execute_action(
         latest_player_message: &request.text,
     };
     let utterance = match session.mode {
-        SessionMode::Mock => state.mock_renderer.render(&plan).utterance,
+        SessionMode::Mock => {
+            let fallback = contextual_fallback(&plan, character, &renderer_context);
+            fallback.utterance
+        }
         SessionMode::Llm => match state.llm_provider().await {
             Ok((provider, settings)) => {
                 let started = Instant::now();
@@ -2571,6 +2585,16 @@ async fn make_accusation(
         .map_err(ApiError::from_storage)?;
     if session.status != SessionStatus::Active {
         return Err(ApiError::validation("session is not active"));
+    }
+    if session.current_turn == 0 {
+        return Err(ApiError::validation(
+            "cannot accuse before any interrogation turn",
+        ));
+    }
+    if request.evidence_ids.is_empty() {
+        return Err(ApiError::validation(
+            "at least one piece of evidence is required for an accusation",
+        ));
     }
     if session.revision != request.expected_revision {
         return Err(ApiError::conflict(format!(
@@ -4287,11 +4311,24 @@ mod tests {
     #[tokio::test]
     async fn accusation_distinguishes_insufficient_and_proven_without_confession() {
         let (state, session, _) = fixture().await;
+        // Play one turn first
+        execute_action(
+            &state,
+            session.session_id,
+            action(
+                0,
+                ClientActionId::new(),
+                &[],
+                "昨晚发生了什么？",
+            ),
+        )
+        .await
+        .unwrap();
         let insufficient = make_accusation(
             State(state.clone()),
             Path(session.session_id.to_string()),
             Json(AccusationRequest {
-                expected_revision: 0,
+                expected_revision: 1,
                 target_character_id: CharacterId::from("luo-cheng"),
                 evidence_ids: vec![EvidenceId::from("ev_card_log")],
                 reasoning: "只有机会证据".into(),
@@ -4309,7 +4346,7 @@ mod tests {
             State(state),
             Path(session.session_id.to_string()),
             Json(AccusationRequest {
-                expected_revision: 1,
+                expected_revision: insufficient.0.session.revision,
                 target_character_id: CharacterId::from("luo-cheng"),
                 evidence_ids: vec![
                     EvidenceId::from("ev_card_log"),
@@ -4366,11 +4403,25 @@ mod tests {
                 .expect_err("active session must not expose truth");
         assert_eq!(active_error.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-        let _ = make_accusation(
+        // Play one turn first
+        execute_action(
+            &state,
+            session.session_id,
+            action(
+                0,
+                ClientActionId::new(),
+                &[],
+                "昨晚发生了什么？",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let _accusation = make_accusation(
             State(state.clone()),
             Path(session.session_id.to_string()),
             Json(AccusationRequest {
-                expected_revision: 0,
+                expected_revision: 1,
                 target_character_id: CharacterId::from("luo-cheng"),
                 evidence_ids: vec![
                     EvidenceId::from("ev_card_log"),

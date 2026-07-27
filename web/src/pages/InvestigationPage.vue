@@ -142,6 +142,15 @@ watch(
 )
 
 watch(
+  () => store.session?.status,
+  (status) => {
+    if (status === 'Resolved' && store.session) {
+      router.replace(`/sessions/${store.session.session_id}/conclusion`)
+    }
+  },
+)
+
+watch(
   () => store.session?.conversation.length ?? 0,
   async (length, previousLength) => {
     if (!sceneReady || length <= previousLength) return
