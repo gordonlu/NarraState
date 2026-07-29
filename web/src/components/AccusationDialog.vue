@@ -22,6 +22,15 @@ const dialog = ref<HTMLElement>()
 const proven = computed(() =>
   result.value === 'CaseProvenWithoutConfession' || result.value === 'CaseProvenWithConfession',
 )
+const insufficientHint = computed(() => {
+  if (result.value !== 'CorrectButInsufficient') return ''
+  const total = store.activeCase?.evidence_count ?? 0
+  const discovered = store.session?.discovered_evidence.length ?? 0
+  if (total > discovered) {
+    return `已发现 ${discovered}/${total} 条线索。出示已有线索给嫌疑人可能解锁新证据。`
+  }
+  return '已选线索未覆盖全部要素。尝试用不同组合，或换一个嫌疑人方向。'
+})
 
 watch(
   () => props.open,
@@ -78,7 +87,7 @@ async function openConclusion() {
           <header><div><h2 id="accusation-title">提交判断</h2><p>选择对象、支撑线索，并说明你的推理。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="$emit('close')"><AppIcon name="close" /></button></header>
           <div v-if="result" class="accusation-result" :class="{ proven }">
             <AppIcon :name="proven ? 'check' : 'warning'" :size="24" />
-            <div><strong>{{ resultLabel(result) }}</strong><p v-if="result === 'WrongSuspect'">现有事实无法支持这个对象，调查仍可继续。</p><p v-else-if="result === 'CorrectButInsufficient'">对象方向正确，但所选线索尚未覆盖完整证据链。</p><p v-else>案件已经结案，可以查看完整报告。</p></div>
+            <div><strong>{{ resultLabel(result) }}</strong><p v-if="result === 'WrongSuspect'">现有事实无法支持这个对象，调查仍可继续。</p><p v-else-if="result === 'CorrectButInsufficient'">对象方向正确，但所选线索尚未覆盖完整证据链。</p><p v-else>案件已经结案，可以查看完整报告。</p><p v-if="insufficientHint" class="accusation-hint">{{ insufficientHint }}</p></div>
           </div>
           <form v-if="!proven" @submit.prevent="submit">
             <fieldset><legend>判断对象</legend><div class="choice-list"><label v-for="character in store.activeCase?.characters" :key="character.id"><input v-model="target" type="radio" :value="character.id" /><span><strong>{{ character.name }}</strong>{{ character.role }}</span></label></div></fieldset>

@@ -15,6 +15,7 @@ defineEmits<{
   settings: []
   conclusion: []
   back: []
+  help: []
 }>()
 </script>
 
@@ -30,6 +31,9 @@ defineEmits<{
     <div v-if="saved" class="saved-state"><AppIcon name="check" :size="17" />已保存</div>
     <button v-if="showConclusion" class="primary-button header-primary" type="button" @click="$emit('conclusion')">
       提交判断
+    </button>
+    <button class="icon-button" type="button" aria-label="帮助" @click="$emit('help')">
+      <AppIcon name="info" :size="21" />
     </button>
     <button class="icon-button settings-button" type="button" aria-label="设置" @click="$emit('settings')">
       <AppIcon name="gear" :size="21" />

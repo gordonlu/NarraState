@@ -151,6 +151,7 @@ export const useSessionStore = defineStore('session', () => {
     if (!session.value || !activeCharacterId.value) throw new Error('没有活动会话')
     const targetCharacterId = activeCharacterId.value
     const evidenceIds = [...attachedEvidenceIds.value]
+    const beforeEvidenceIds = new Set(session.value.discovered_evidence.map((e) => e.id))
     pendingQuestion.value = {
       targetCharacterId,
       text,
@@ -188,7 +189,15 @@ export const useSessionStore = defineStore('session', () => {
       attachedEvidenceIds.value = []
       streamText.value = ''
       streamStage.value = ''
-      if (result.degraded) notice.value = '本回合已使用安全降级回应，状态仍已保存'
+      const newEvidence = session.value.discovered_evidence.filter(
+        (e) => !beforeEvidenceIds.has(e.id),
+      )
+      if (newEvidence.length > 0) {
+        const titles = newEvidence.map((e) => e.title).join('、')
+        notice.value = `发现新线索：${titles}`
+      } else if (result.degraded) {
+        notice.value = '本回合已使用安全降级回应，状态仍已保存'
+      }
       saveSession()
       return result
     } catch (reason) {

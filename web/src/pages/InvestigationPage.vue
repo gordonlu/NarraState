@@ -16,6 +16,7 @@ import {
   createInvestigationEntrance,
   type EvidenceDragController,
 } from '../lib/appMotion'
+import { animateOverlayEnter, animateOverlayLeave } from '../lib/overlayMotion'
 import { buildTurnNumberIndex, conversationForCharacter } from '../lib/conversation'
 import { describeFact, formatStoryTime, speakerId } from '../lib/present'
 import { useSessionStore } from '../stores/session'
@@ -34,6 +35,7 @@ const settingsOpen = ref(false)
 const accusationOpen = ref(false)
 const developerOpen = ref(false)
 const prologueOpen = ref(false)
+const helpOpen = ref(false)
 const transcript = ref<HTMLElement>()
 const inference = ref('')
 const evidenceQuery = ref('')
@@ -329,6 +331,7 @@ function enterInvestigation() {
       @back="router.push(`/cases/${store.activeCase?.id ?? store.session?.case_id}`)"
       @settings="settingsOpen = true"
       @conclusion="accusationOpen = true"
+      @help="helpOpen = true"
     />
     <NoticeBar v-if="store.notice" :message="store.notice" :tone="store.degraded ? 'warning' : 'info'" @close="store.clearNotice" />
     <NoticeBar v-else-if="store.error" :message="store.error" tone="error" @close="store.error = undefined" />
@@ -340,9 +343,9 @@ function enterInvestigation() {
         <h1 id="prologue-title">{{ store.activeCase.title }}</h1>
         <p class="prologue-summary">{{ store.activeCase.summary }}</p>
         <ol>
-          <li><strong>先听说法</strong><span>选择一名人物，从事情经过开始询问。</span></li>
-          <li><strong>核对记录</strong><span>用公开事件线和已发现线索检查说法。</span></li>
-          <li><strong>追问矛盾</strong><span>附加相关线索继续提问，再提交你的判断。</span></li>
+          <li><strong>先听说法</strong><span>选择一名人物，从事情经过开始询问，建立完整说法。</span></li>
+          <li><strong>出示线索</strong><span>把已发现线索附加到问题中，推动审讯阶段并解锁新线索。</span></li>
+          <li><strong>追问矛盾</strong><span>用新解锁的线索继续追问不同嫌疑人，找出完整证据链。</span></li>
         </ol>
         <small>本局真相已经锁定；你的行动会改变人物如何回应，不会改写事实。</small>
         <button class="primary-button" type="button" @click="enterInvestigation">进入调查<AppIcon name="arrow-right" :size="17" /></button>
@@ -396,7 +399,7 @@ function enterInvestigation() {
           <div v-if="visibleConversation.length === 0 && !visiblePendingQuestion" class="transcript-empty">
             <span>第一步 · 听取说法</span>
             <h2>先听{{ store.activeCharacter?.name }}从头说明</h2>
-            <p>第一轮不必急着出示线索。先建立完整说法，再从时间、地点和行为中寻找需要核对之处。</p>
+            <p>第一轮不必出示线索。先建立完整说法，然后从右侧线索列表中拖入或勾选线索附加到问题中，推动审讯并解锁更多证据。</p>
             <button type="button" @click="question = '请从头说说，事情发生前后你做了什么？'">使用建议问题</button>
           </div>
           <article v-for="(entry, index) in visibleConversation" :key="`${entry.turn_id}-${entrySpeaker(entry)}`" class="transcript-turn" :class="{ player: speakerId(entry.speaker) === 'Player' }" :data-turn-index="index">
@@ -504,6 +507,45 @@ function enterInvestigation() {
     </nav>
 
     <SettingsDrawer :open="settingsOpen" @close="settingsOpen = false" />
+    <Transition :css="false" @enter="animateOverlayEnter" @leave="animateOverlayLeave">
+      <div v-if="helpOpen" class="dialog-layer" @mousedown.self="helpOpen = false">
+        <section class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
+          <header><div><h2 id="help-title">调查指南</h2><p>了解如何推进审讯、发现线索并破案。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="helpOpen = false"><AppIcon name="close" /></button></header>
+          <div class="help-body">
+            <section>
+              <h3>审讯阶段</h3>
+              <p>每个嫌疑人有 5 个审讯阶段：<strong>平静 → 警觉 → 防御 → 施压 → 可认罪</strong>。出示线索会推动阶段前进，阶段越高，嫌疑人越可能透露关键信息。</p>
+              <p class="help-tip">只问问题不会推动阶段。必须<strong>附加线索</strong>后提问，才构成有效施压。</p>
+            </section>
+            <section>
+              <h3>线索发现链</h3>
+              <p>部分线索需要通过出示已有线索来解锁。例如：出示"监控记录"可能解锁"催债短信"等新线索。</p>
+              <p class="help-tip">发现新线索时会弹出提示。如果调查陷入僵局，尝试把已掌握的线索逐一出示给不同嫌疑人。</p>
+            </section>
+            <section>
+              <h3>如何提交判断</h3>
+              <p>指控需要选择嫌疑人、勾选线索、写出推理。系统会检查：</p>
+              <ol>
+                <li><strong>方向</strong>：嫌疑人是否确实是策划者</li>
+                <li><strong>证据覆盖</strong>：选中线索是否覆盖全部要素（身份、机会、手段、行动、动机、隐瞒）</li>
+              </ol>
+              <p class="help-tip">如果提示"证据不足"，说明要么还有线索没发现，要么选中的线索组合缺少某些要素。继续调查和出示线索即可。</p>
+            </section>
+            <section>
+              <h3>调查建议</h3>
+              <ul>
+                <li>先让每个嫌疑人从头讲述经过，建立完整说法</li>
+                <li>用事件线核对时间，找出矛盾</li>
+                <li>把线索出示给不同嫌疑人，观察反应差异</li>
+                <li>发现新线索后，继续用新线索追问</li>
+                <li>所有阶段都推进到"可认罪"后再提交判断</li>
+              </ul>
+            </section>
+          </div>
+          <footer><button class="primary-button" type="button" @click="helpOpen = false">开始调查</button></footer>
+        </section>
+      </div>
+    </Transition>
     <AccusationDialog :open="accusationOpen" @close="accusationOpen = false" />
     <DeveloperDrawer :open="developerOpen" @close="developerOpen = false" />
   </div>
