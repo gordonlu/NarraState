@@ -4508,6 +4508,118 @@ mod tests {
         assert_eq!(proven.0.session.status, SessionStatus::Resolved);
     }
 
+    #[test]
+    fn discover_evidence_unlocks_chained_clues_after_presentation() {
+        use narrastate_core::case::PlayerKnowledge;
+        use narrastate_core::evidence::CaseElement;
+
+        let ev_start = EvidenceId::from("ev-start");
+        let ev_chained = EvidenceId::from("ev-chained");
+        let ev_phase = EvidenceId::from("ev-phase");
+        let char_id = CharacterId::from("char-test");
+
+        let case = CaseDefinition {
+            schema_version: "0.2.0".into(),
+            id: CaseId::from("case-test"),
+            title: "Test".into(),
+            summary: "Test".into(),
+            locale: "zh-CN".into(),
+            required_case_elements: BTreeSet::from([CaseElement::Identity]),
+            entities: vec![],
+            facts: vec![],
+            evidence: vec![
+                EvidenceDefinition {
+                    id: ev_start.clone(),
+                    title: "起始线索".into(),
+                    description: "".into(),
+                    supports: vec![],
+                    contradicts: vec![],
+                    elements: BTreeSet::from([CaseElement::Identity]),
+                    reliability: 0.8,
+                    directness: 0.8,
+                    exclusivity: 0.5,
+                    discoverable_by: vec![DiscoveryRule::StartingEvidence],
+                },
+                EvidenceDefinition {
+                    id: ev_chained.clone(),
+                    title: "连锁线索".into(),
+                    description: "".into(),
+                    supports: vec![],
+                    contradicts: vec![],
+                    elements: BTreeSet::from([CaseElement::Identity]),
+                    reliability: 0.8,
+                    directness: 0.8,
+                    exclusivity: 0.5,
+                    discoverable_by: vec![DiscoveryRule::AfterEvidencePresented {
+                        evidence_id: ev_start.clone(),
+                    }],
+                },
+                EvidenceDefinition {
+                    id: ev_phase.clone(),
+                    title: "阶段线索".into(),
+                    description: "".into(),
+                    supports: vec![],
+                    contradicts: vec![],
+                    elements: BTreeSet::from([CaseElement::Identity]),
+                    reliability: 0.8,
+                    directness: 0.8,
+                    exclusivity: 0.5,
+                    discoverable_by: vec![DiscoveryRule::AutomaticAtPhase {
+                        phase: InterrogationPhase::Guarded,
+                    }],
+                },
+            ],
+            characters: vec![],
+            initial_player_knowledge: PlayerKnowledge {
+                fact_ids: vec![],
+                evidence_ids: vec![],
+            },
+            ending: None,
+        };
+
+        let mut session = SessionState {
+            session_id: SessionId::new(),
+            case_id: case.id.clone(),
+            instance_id: None,
+            mode: SessionMode::Mock,
+            status: SessionStatus::Active,
+            current_turn: 0,
+            active_character: Some(char_id.clone()),
+            discovered_facts: BTreeSet::new(),
+            discovered_evidence: BTreeSet::from([ev_start.clone()]),
+            character_states: BTreeMap::from([(
+                char_id.clone(),
+                CharacterRuntimeState::new(50),
+            )]),
+            conversation: vec![],
+            accusations: vec![],
+            revision: 0,
+        };
+
+        // Before presenting evidence: only StartingEvidence is discovered
+        assert!(!session.discovered_evidence.contains(&ev_chained));
+        assert!(!session.discovered_evidence.contains(&ev_phase));
+
+        // Simulate presenting ev-start to the character
+        session.character_states.get_mut(&char_id).unwrap()
+            .confronted_evidence.insert(ev_start.clone());
+
+        discover_evidence(&mut session, &case);
+
+        // AfterEvidencePresented should now be discovered
+        assert!(session.discovered_evidence.contains(&ev_chained), "chained evidence after presentation");
+        // AutomaticAtPhase should NOT be discovered (phase is still Calm)
+        assert!(!session.discovered_evidence.contains(&ev_phase), "phase-gated evidence before phase advance");
+
+        // Advance phase to Guarded
+        session.character_states.get_mut(&char_id).unwrap()
+            .set_phase(InterrogationPhase::Guarded, TurnId::new()).unwrap();
+        discover_evidence(&mut session, &case);
+
+        // Now AutomaticAtPhase should also be discovered
+        assert!(session.discovered_evidence.contains(&ev_phase), "phase-gated evidence after phase advance");
+    }
+
     #[tokio::test]
     async fn developer_endpoint_is_explicit_and_contains_trace_data() {
         let (state, session, _) = fixture().await;
