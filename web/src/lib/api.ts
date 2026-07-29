@@ -75,6 +75,7 @@ export const api = {
     method: 'POST', body: JSON.stringify(payload),
   }),
   generationJob: (jobId: string) => request<GenerationJob>(`/api/v1/case-generation/jobs/${encodeURIComponent(jobId)}`),
+  resumeGenerationJob: (jobId: string) => request<GenerationJob>(`/api/v1/case-generation/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' }),
   cases: () => request<CaseSummary[]>('/api/v1/cases'),
   case: (caseId: string) => request<CaseDetail>(`/api/v1/cases/${encodeURIComponent(caseId)}`),
   generateCaseVisuals: (caseId: string, mode: VisualGenerationMode) =>

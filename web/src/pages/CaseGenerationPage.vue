@@ -24,6 +24,38 @@ let stopped = false
 let elapsedTimer: ReturnType<typeof setInterval> | undefined
 const customPreferences = ref('')
 const selectedBoundaries = ref<string[]>([])
+
+const riddles = [
+  { q: '什么东西早上四条腿，中午两条腿，晚上三条腿？', a: '人', hint: '与年龄有关' },
+  { q: '什么东西越洗越脏？', a: '水', hint: '你用它洗东西' },
+  { q: '什么树没有叶子？', a: '铁树', hint: '不是植物' },
+  { q: '什么东西有头无脚？', a: '钉子', hint: '金属制品' },
+  { q: '什么东西打破才能用？', a: '鸡蛋', hint: '厨房里' },
+  { q: '什么门永远关不上？', a: '球门', hint: '运动场' },
+  { q: '什么东西你只能给别人，自己不能留？', a: '名字', hint: '身份标识' },
+  { q: '什么东西丢了就再也找不回来？', a: '时间', hint: '一直在流逝' },
+]
+const riddleIndex = ref(Math.floor(Math.random() * riddles.length))
+const riddleGuess = ref('')
+const riddleFeedback = ref<'idle' | 'correct' | 'wrong'>('idle')
+const riddleRevealed = ref(false)
+
+function nextRiddle() {
+  riddleIndex.value = (riddleIndex.value + 1) % riddles.length
+  riddleGuess.value = ''
+  riddleFeedback.value = 'idle'
+  riddleRevealed.value = false
+}
+
+function checkRiddle() {
+  const guess = riddleGuess.value.trim()
+  if (!guess) return
+  if (guess.includes(riddles[riddleIndex.value].a) || riddles[riddleIndex.value].a.includes(guess)) {
+    riddleFeedback.value = 'correct'
+  } else {
+    riddleFeedback.value = 'wrong'
+  }
+}
 const boundaryOptions = [
   { id: 'no_supernatural', label: '不使用超自然解释', value: '所有核心事件必须有现实可验证的解释' },
   { id: 'low_emotional_intensity', label: '降低情绪压迫感', value: '避免持续的高压、羞辱或强烈心理恐惧描写' },
@@ -205,6 +237,29 @@ function validateForm() {
 function clearFormError(key: string) {
   delete formErrors[key]
 }
+
+async function resume() {
+  if (!job.value?.job_id || running.value) return
+  running.value = true
+  startElapsedTimer()
+  try {
+    job.value = await api.resumeGenerationJob(job.value.job_id)
+    while (!stopped && job.value.status !== 'completed' && job.value.status !== 'failed') {
+      await new Promise(resolve => setTimeout(resolve, 700))
+      job.value = await api.generationJob(job.value.job_id)
+    }
+    if (!stopped && job.value.status === 'completed') {
+      await router.replace(job.value.case_id
+        ? { name: 'case-brief', params: { caseId: job.value.case_id } }
+        : { name: 'cases' })
+    }
+  } catch {
+    // keep the current job state on error
+  } finally {
+    running.value = false
+    stopElapsedTimer()
+  }
+}
 </script>
 
 <template>
@@ -259,8 +314,24 @@ function clearFormError(key: string) {
         <div v-if="job.error_code" class="generation-error">
           <span class="generation-error-icon"><AppIcon name="warning" :size="22" /></span>
           <div><strong>这次没有生成成功</strong><p>{{ visibleErrorMessage }}</p>
+            <div class="generation-error-actions">
+              <button v-if="job.can_resume" class="primary-button" type="button" :disabled="running" @click="resume">{{ running ? '正在继续…' : '从断点继续' }}</button>
+              <button class="secondary-button" type="button" @click="job = undefined">重新填写</button>
+            </div>
             <details><summary>查看技术详情</summary><code>{{ job.error_code }}</code><p class="generation-error-detail">{{ job.error_message }}</p></details>
           </div>
+        </div>
+        <div v-if="running && job.status !== 'completed' && job.status !== 'failed'" class="generation-minigame">
+          <div class="minigame-header"><span>等案件生成的时候，猜个谜吧</span><button type="button" class="minigame-skip" @click="nextRiddle">换一题</button></div>
+          <p class="minigame-question">{{ riddles[riddleIndex].q }}</p>
+          <div class="minigame-input-row">
+            <input v-model="riddleGuess" class="minigame-input" placeholder="输入你的答案" @keydown.enter="checkRiddle" @input="riddleFeedback = 'idle'" />
+            <button class="secondary-button" type="button" @click="checkRiddle">猜</button>
+          </div>
+          <p v-if="riddleFeedback === 'correct'" class="minigame-feedback correct">猜对了！再来一题？</p>
+          <p v-else-if="riddleFeedback === 'wrong'" class="minigame-feedback wrong">不对，再想想？</p>
+          <p v-if="riddleRevealed" class="minigame-hint">答案：{{ riddles[riddleIndex].a }}</p>
+          <button v-if="riddleFeedback === 'wrong' && !riddleRevealed" type="button" class="minigame-reveal" @click="riddleRevealed = true">看答案</button>
         </div>
         <footer v-if="!running"><span>已尝试 {{ job.attempt_count }} 次</span><span>自动调整 {{ job.repair_count }} 次</span><span v-if="job.result_path">已加入案件列表</span></footer>
       </section>

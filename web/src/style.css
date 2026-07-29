@@ -1666,6 +1666,30 @@ button:disabled {
 .generation-error summary { width: fit-content; cursor: pointer; }
 .generation-error code { display: block; margin-top: 8px; padding: 8px 10px; border-radius: 6px; color: #e8bcbc; background: rgb(0 0 0 / 20%); overflow-wrap: anywhere; }
 .generation-error .generation-error-detail { margin: 8px 0 0; padding: 8px 10px; border-left: 1px solid rgb(220 109 109 / 34%); color: var(--muted); background: rgb(0 0 0 / 12%); font: 400 9px/1.55 Consolas, monospace; overflow-wrap: anywhere; }
+.generation-error-actions { display: flex; gap: 10px; margin-top: 14px; }
+.generation-error-actions .primary-button,
+.generation-error-actions .secondary-button { min-height: 38px; padding: 0 16px; font-size: 13px; }
+.generation-minigame {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 2%);
+}
+.minigame-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.minigame-header span { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.minigame-skip { border: 0; color: var(--accent-strong); background: transparent; font-size: 11px; cursor: pointer; }
+.minigame-question { color: #dfe2e5; font-size: 15px; line-height: 1.6; }
+.minigame-input-row { display: flex; gap: 8px; margin-top: 12px; }
+.minigame-input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid var(--divider); border-radius: 4px; color: var(--text); background: var(--raised); font-size: 13px; }
+.minigame-input:focus { border-color: var(--accent); outline: 0; }
+.minigame-input-row .secondary-button { min-height: 38px; padding: 0 16px; font-size: 13px; }
+.minigame-feedback { margin-top: 10px; font-size: 13px; }
+.minigame-feedback.correct { color: var(--success); }
+.minigame-feedback.wrong { color: var(--warning); }
+.minigame-hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.minigame-reveal { margin-top: 8px; border: 0; color: var(--subtle); background: transparent; font-size: 11px; cursor: pointer; }
+.minigame-reveal:hover { color: var(--text); }
 .generation-result > footer { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--divider); color: var(--muted); font-size: 10px; }
 @keyframes generation-orbit { to { transform: rotate(360deg); } }
 @keyframes generation-dot { 0%, 70%, 100% { opacity: .28; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }

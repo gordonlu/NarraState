@@ -112,7 +112,7 @@ async fn cmd_case(args: &[String]) {
                         .ok()
                         .and_then(|value| value.parse().ok())
                         .filter(|value| (30..=900).contains(value))
-                        .unwrap_or(180),
+                        .unwrap_or(300),
                     structured_output_max_tokens: std::env::var("NARRASTATE_GENERATION_MAX_TOKENS")
                         .ok()
                         .and_then(|value| value.parse().ok())

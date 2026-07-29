@@ -6,6 +6,21 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Persisted intermediate results from each staged generation step.
+/// Each field is `Some` once the corresponding stage has completed successfully.
+/// On resume, stages with `Some` are skipped entirely.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct GenerationCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blueprint: Option<GeneratedCaseBlueprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_world: Option<GeneratedSharedWorldDraft>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_characters: Option<Vec<CharacterDefinition>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Vec<DraftSolutionVariant>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NarrativeTone {
@@ -399,6 +414,7 @@ impl GenerationStatus {
                 | (Validating, Simulating | Repairing | Failed)
                 | (Simulating, Completed | Repairing | Failed)
                 | (Repairing, Parsing | Failed)
+                | (Failed, Drafting)
         )
     }
 

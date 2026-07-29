@@ -3,7 +3,7 @@ use narrastate_core::case::CaseDefinition;
 use narrastate_core::id::{CaseId, ClientActionId, SessionId};
 use narrastate_core::session::{NarrativeEvent, SessionState};
 use narrastate_core::{
-    CaseInstance, GeneratedCaseDraft, GeneratedVisualType, GenerationJobId,
+    CaseInstance, GeneratedCaseDraft, GeneratedVisualType, GenerationCheckpoint, GenerationJobId,
     GenerationRepairRequest, GenerationRequest, GenerationStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,12 @@ pub struct GenerationProgressUpdate {
 #[async_trait]
 pub trait GenerationProgressReporter: Send + Sync {
     async fn report(&self, update: GenerationProgressUpdate) -> Result<(), ProviderError>;
+    async fn save_checkpoint(
+        &self,
+        _checkpoint: &GenerationCheckpoint,
+    ) -> Result<(), ProviderError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +273,8 @@ pub struct GenerationJobRecord {
     pub repair_count: u32,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub checkpoint_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

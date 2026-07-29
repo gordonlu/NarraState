@@ -82,3 +82,9 @@ fn generation_state_machine_rejects_skips_and_terminal_restarts() {
     assert!(GenerationStatus::Pending.can_transition_to(GenerationStatus::Drafting));
     assert!(GenerationStatus::Simulating.can_transition_to(GenerationStatus::Completed));
 }
+
+#[test]
+fn generation_failed_can_resume_to_drafting() {
+    assert!(GenerationStatus::Failed.can_transition_to(GenerationStatus::Drafting));
+    assert!(!GenerationStatus::Completed.can_transition_to(GenerationStatus::Drafting));
+}

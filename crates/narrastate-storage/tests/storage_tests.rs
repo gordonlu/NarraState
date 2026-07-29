@@ -533,6 +533,7 @@ async fn generation_job_roundtrips_and_restart_fails_non_terminal_work() {
         repair_count: 1,
         error_code: None,
         error_message: None,
+        checkpoint_json: None,
         created_at: "2026-07-15T00:00:00Z".into(),
         updated_at: "2026-07-15T00:00:01Z".into(),
     };

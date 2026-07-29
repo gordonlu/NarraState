@@ -857,15 +857,16 @@ impl Repository for SqliteRepository {
             "INSERT INTO case_generation_jobs
              (job_id, status, request_json, drafts_json, status_events_json,
               validation_report_json, result_path, attempt_count, repair_count,
-              error_code, error_message, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              error_code, error_message, checkpoint_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(job_id) DO UPDATE SET
               status=excluded.status, drafts_json=excluded.drafts_json,
               status_events_json=excluded.status_events_json,
               validation_report_json=excluded.validation_report_json,
               result_path=excluded.result_path, attempt_count=excluded.attempt_count,
               repair_count=excluded.repair_count, error_code=excluded.error_code,
-              error_message=excluded.error_message, updated_at=excluded.updated_at",
+              error_message=excluded.error_message, checkpoint_json=excluded.checkpoint_json,
+              updated_at=excluded.updated_at",
         )
         .bind(job.job_id.to_string())
         .bind(generation_status_text(job.status))
@@ -878,6 +879,7 @@ impl Repository for SqliteRepository {
         .bind(i64::from(job.repair_count))
         .bind(&job.error_code)
         .bind(&job.error_message)
+        .bind(&job.checkpoint_json)
         .bind(&job.created_at)
         .bind(&job.updated_at)
         .execute(&self.pool)
@@ -918,6 +920,7 @@ impl Repository for SqliteRepository {
             .map_err(|_| StorageError::Serialization("invalid repair_count".into()))?,
             error_code: row.try_get("error_code").map_err(map_database)?,
             error_message: row.try_get("error_message").map_err(map_database)?,
+            checkpoint_json: row.try_get("checkpoint_json").map_err(map_database)?,
             created_at: row.try_get("created_at").map_err(map_database)?,
             updated_at: row.try_get("updated_at").map_err(map_database)?,
         })

@@ -32,8 +32,8 @@ use narrastate_core::session::{
 };
 use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone, TransitionTuning};
 use narrastate_core::{
-    CaseManifest, CaseTemplate, GeneratedVisualType, GenerationJobId, GenerationLimits,
-    GenerationRequest, GenerationStatus, Seed, VariantSelection,
+    CaseManifest, CaseTemplate, GeneratedVisualType, GenerationCheckpoint, GenerationJobId,
+    GenerationLimits, GenerationRequest, GenerationStatus, Seed, VariantSelection,
 };
 use narrastate_provider::case_generation::OpenAiCompatibleCaseGenerationProvider;
 use narrastate_provider::image_generation::OpenAiCompatibleImageProvider;
@@ -57,7 +57,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-const DEFAULT_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 300;
 const MIN_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 30;
 const MAX_GENERATION_PROVIDER_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_GENERATION_OUTPUT_MAX_TOKENS: u32 = 65_536;
@@ -146,6 +146,32 @@ impl GenerationProgressReporter for JobGenerationProgressReporter {
             .map_err(|error| {
                 ProviderError::Unknown(format!("generation progress save failed: {error}"))
             })
+    }
+
+    async fn save_checkpoint(
+        &self,
+        checkpoint: &GenerationCheckpoint,
+    ) -> Result<(), ProviderError> {
+        let _guard = self.write_lock.lock().await;
+        let mut record = self
+            .repo
+            .load_generation_job(&self.job_id)
+            .await
+            .map_err(|error| ProviderError::Unknown(format!("checkpoint load failed: {error}")))?;
+        if record.status.is_terminal() {
+            return Err(ProviderError::Unknown(
+                "checkpoint cannot update a terminal job".into(),
+            ));
+        }
+        record.checkpoint_json = Some(
+            serde_json::to_string(checkpoint)
+                .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?,
+        );
+        record.updated_at = chrono::Utc::now().to_rfc3339();
+        self.repo
+            .save_generation_job(&record)
+            .await
+            .map_err(|error| ProviderError::Unknown(format!("checkpoint save failed: {error}")))
     }
 }
 
@@ -336,6 +362,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/case-generation/jobs/{job_id}",
             get(get_generation_job),
+        )
+        .route(
+            "/api/v1/case-generation/jobs/{job_id}/resume",
+            post(resume_generation_job),
         )
         .route(
             "/api/v1/case-generation/jobs/{job_id}/report",
@@ -990,6 +1020,7 @@ async fn create_generation_job(
         repair_count: 0,
         error_code: None,
         error_message: None,
+        checkpoint_json: None,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -1008,6 +1039,7 @@ async fn create_generation_job(
             generate_visuals,
             request_json,
             now,
+            None,
         )
         .await
         {
@@ -1034,6 +1066,7 @@ async fn complete_generation_job(
     generate_visuals: bool,
     request_json: String,
     now: String,
+    checkpoint: Option<GenerationCheckpoint>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let mut drafting = state
         .repo
@@ -1072,6 +1105,7 @@ async fn complete_generation_job(
                         repair_count: 0,
                         error_code: Some("GENERATION_PROVIDER_NOT_CONFIGURED".into()),
                         error_message: Some(error.detail),
+                        checkpoint_json: None,
                         created_at: now,
                         updated_at: chrono::Utc::now().to_rfc3339(),
                     };
@@ -1084,9 +1118,12 @@ async fn complete_generation_job(
                 }
             };
             Arc::new(
-                OpenAiCompatibleCaseGenerationProvider::new(llm).with_progress_reporter(Arc::new(
-                    JobGenerationProgressReporter::new(state.repo.clone(), job_id),
-                )),
+                OpenAiCompatibleCaseGenerationProvider::new(llm)
+                    .with_progress_reporter(Arc::new(JobGenerationProgressReporter::new(
+                        state.repo.clone(),
+                        job_id,
+                    )))
+                    .with_checkpoint(checkpoint.unwrap_or_default()),
             )
         }
     };
@@ -1171,6 +1208,7 @@ async fn complete_generation_job(
                         repair_count: success.repairs,
                         error_code: Some("GENERATION_PACKAGE_INSTALL_FAILED".into()),
                         error_message: Some(error.to_string()),
+                        checkpoint_json: None,
                         created_at: now,
                         updated_at: chrono::Utc::now().to_rfc3339(),
                     };
@@ -1213,6 +1251,7 @@ async fn complete_generation_job(
                 repair_count: success.repairs,
                 error_code: None,
                 error_message: None,
+                checkpoint_json: None,
                 created_at: now,
                 updated_at: chrono::Utc::now().to_rfc3339(),
             };
@@ -1231,6 +1270,12 @@ async fn complete_generation_job(
                     .map_err(|error| ApiError::internal(error.to_string()))?,
             )
             .await?;
+            let checkpoint_json = state
+                .repo
+                .load_generation_job(&job_id)
+                .await
+                .map_err(ApiError::from_storage)?
+                .checkpoint_json;
             let record = GenerationJobRecord {
                 job_id,
                 status: GenerationStatus::Failed,
@@ -1246,6 +1291,7 @@ async fn complete_generation_job(
                 repair_count: failure.repairs,
                 error_code: Some(failure.code),
                 error_message: Some(failure.message),
+                checkpoint_json,
                 created_at: now,
                 updated_at: chrono::Utc::now().to_rfc3339(),
             };
@@ -1316,6 +1362,64 @@ async fn get_generation_job(
     Ok(Json(generation_job_json(&record)?))
 }
 
+async fn resume_generation_job(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = GenerationJobId(
+        Uuid::parse_str(&job_id).map_err(|_| ApiError::validation("invalid job id"))?,
+    );
+    let record = state
+        .repo
+        .load_generation_job(&id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    if record.status != GenerationStatus::Failed {
+        return Err(ApiError::validation("only failed jobs can be resumed"));
+    }
+    let request: GenerationRequest = serde_json::from_str(&record.request_json)
+        .map_err(|error| ApiError::internal(format!("failed to parse request: {error}")))?;
+    let checkpoint = record
+        .checkpoint_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<GenerationCheckpoint>(json).ok());
+    let request_json = record.request_json.clone();
+    let now = record.created_at.clone();
+
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = complete_generation_job(
+            task_state.clone(),
+            id,
+            request,
+            false,
+            request_json,
+            now,
+            checkpoint,
+        )
+        .await
+        {
+            tracing::error!(%id, detail = %error.detail, "generation resume task failed");
+            if let Err(storage_error) = fail_background_generation_job(
+                &*task_state.repo,
+                id,
+                "GENERATION_BACKGROUND_FAILED",
+                &error.detail,
+            )
+            .await
+            {
+                tracing::error!(%id, %storage_error, "generation resume failure could not be persisted");
+            }
+        }
+    });
+    let updated = state
+        .repo
+        .load_generation_job(&id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(generation_job_json(&updated)?))
+}
+
 async fn get_generation_report(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<String>,
@@ -1337,6 +1441,8 @@ async fn get_generation_report(
 }
 
 fn generation_job_json(record: &GenerationJobRecord) -> Result<serde_json::Value, ApiError> {
+    let can_resume = record.status == GenerationStatus::Failed
+        && record.error_code.as_deref() != Some("GENERATION_PROVIDER_NOT_CONFIGURED");
     let mut response = serde_json::json!({
         "job_id": record.job_id,
         "status": record.status,
@@ -1345,6 +1451,7 @@ fn generation_job_json(record: &GenerationJobRecord) -> Result<serde_json::Value
         "error_code": record.error_code,
         "error_message": record.error_message,
         "result_path": record.result_path,
+        "can_resume": can_resume,
         "events": serde_json::from_str::<serde_json::Value>(&record.status_events_json).map_err(|e| ApiError::internal(e.to_string()))?,
         "updated_at": record.updated_at,
     });
@@ -3230,11 +3337,11 @@ mod tests {
 
     #[test]
     fn generation_provider_uses_a_long_but_bounded_timeout() {
-        assert_eq!(parse_generation_provider_timeout(None), 180);
-        assert_eq!(parse_generation_provider_timeout(Some("300")), 300);
-        assert_eq!(parse_generation_provider_timeout(Some("29")), 180);
-        assert_eq!(parse_generation_provider_timeout(Some("901")), 180);
-        assert_eq!(parse_generation_provider_timeout(Some("invalid")), 180);
+        assert_eq!(parse_generation_provider_timeout(None), 300);
+        assert_eq!(parse_generation_provider_timeout(Some("600")), 600);
+        assert_eq!(parse_generation_provider_timeout(Some("29")), 300);
+        assert_eq!(parse_generation_provider_timeout(Some("901")), 300);
+        assert_eq!(parse_generation_provider_timeout(Some("invalid")), 300);
         assert_eq!(parse_generation_output_max_tokens(None), 65_536);
         assert_eq!(parse_generation_output_max_tokens(Some("16384")), 16_384);
         assert_eq!(parse_generation_output_max_tokens(Some("2048")), 65_536);
@@ -3265,6 +3372,7 @@ mod tests {
                 repair_count: 0,
                 error_code: None,
                 error_message: None,
+                checkpoint_json: None,
                 created_at: now.clone(),
                 updated_at: now,
             })
@@ -3563,6 +3671,7 @@ mod tests {
             repair_count: 0,
             error_code: None,
             error_message: None,
+            checkpoint_json: None,
             created_at: "2026-07-16T00:00:00Z".into(),
             updated_at: "2026-07-16T00:00:00Z".into(),
         };

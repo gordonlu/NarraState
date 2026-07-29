@@ -3,8 +3,8 @@ use futures_util::{stream, StreamExt};
 use narrastate_core::{
     ConfessionPolicy, DisclosureKind, DisclosurePrerequisite, DraftCaseTemplate,
     GeneratedCaseBlueprint, GeneratedCaseDraft, GeneratedCharacterDraft, GeneratedSharedCaseDraft,
-    GeneratedSharedWorldDraft, GeneratedVariantDraft, GenerationIssue, GenerationRepairRequest,
-    GenerationRequest,
+    GeneratedSharedWorldDraft, GeneratedVariantDraft, GenerationCheckpoint, GenerationIssue,
+    GenerationRepairRequest, GenerationRequest,
 };
 use narrastate_runtime::ports::{
     CaseGenerationProvider, ChatMessage, GenerationProgressReporter, GenerationProgressStage,
@@ -298,6 +298,7 @@ struct VariantRepairInput<'a> {
 pub struct OpenAiCompatibleCaseGenerationProvider {
     llm: Arc<dyn LlmProvider>,
     progress: Option<Arc<dyn GenerationProgressReporter>>,
+    checkpoint: Option<GenerationCheckpoint>,
 }
 
 impl OpenAiCompatibleCaseGenerationProvider {
@@ -305,11 +306,17 @@ impl OpenAiCompatibleCaseGenerationProvider {
         Self {
             llm,
             progress: None,
+            checkpoint: None,
         }
     }
 
     pub fn with_progress_reporter(mut self, progress: Arc<dyn GenerationProgressReporter>) -> Self {
         self.progress = Some(progress);
+        self
+    }
+
+    pub fn with_checkpoint(mut self, checkpoint: GenerationCheckpoint) -> Self {
+        self.checkpoint = Some(checkpoint);
         self
     }
 
@@ -327,6 +334,16 @@ impl OpenAiCompatibleCaseGenerationProvider {
                     total,
                 })
                 .await?;
+        }
+        Ok(())
+    }
+
+    async fn save_checkpoint(
+        &self,
+        checkpoint: &GenerationCheckpoint,
+    ) -> Result<(), ProviderError> {
+        if let Some(progress) = &self.progress {
+            progress.save_checkpoint(checkpoint).await?;
         }
         Ok(())
     }
@@ -393,94 +410,122 @@ impl OpenAiCompatibleCaseGenerationProvider {
         &self,
         request: &GenerationRequest,
     ) -> Result<ProviderResponse<GeneratedCaseDraft>, ProviderError> {
-        self.report_progress(GenerationProgressStage::Blueprint, None, None)
-            .await?;
-        let mut blueprint_response = self
-            .structured::<GeneratedCaseBlueprint>(BLUEPRINT_SYSTEM_PROMPT, request)
-            .await?;
-        trim_blueprint_to_requested_size(request, &mut blueprint_response.output);
-        if let Err(error) = validate_blueprint(request, &blueprint_response.output) {
-            let correction_prompt = format!(
-                "{BLUEPRINT_SYSTEM_PROMPT}\n上一次蓝图未通过 Rust 数量或引用检查：{error}。请从原始 GenerationRequest 重新生成完整蓝图，角色必须恰好为 {} 个，真相变体必须恰好为 {} 个；不得返回补丁或空数组。",
-                request.character_count, request.variant_count
-            );
-            let mut corrected = self
-                .structured::<GeneratedCaseBlueprint>(&correction_prompt, request)
-                .await?;
-            corrected.usage = blueprint_response.usage.combine(corrected.usage);
-            blueprint_response = corrected;
-        }
-        let mut blueprint = blueprint_response.output;
-        trim_blueprint_to_requested_size(request, &mut blueprint);
-        validate_blueprint(request, &blueprint)?;
-        let mut usage = blueprint_response.usage;
+        let mut checkpoint = self.checkpoint.clone().unwrap_or_default();
+        let mut usage = TokenUsage::default();
 
-        self.report_progress(GenerationProgressStage::SharedContent, None, None)
-            .await?;
-        let shared_response = self
-            .structured::<GeneratedSharedWorldDraft>(
-                SHARED_SYSTEM_PROMPT,
-                &SharedGenerationInput {
-                    generation_request: request,
-                    blueprint: &blueprint,
-                },
+        // Step 1: Blueprint
+        let blueprint = if let Some(bp) = &checkpoint.blueprint {
+            bp.clone()
+        } else {
+            self.report_progress(GenerationProgressStage::Blueprint, None, None)
+                .await?;
+            let mut blueprint_response = self
+                .structured::<GeneratedCaseBlueprint>(BLUEPRINT_SYSTEM_PROMPT, request)
+                .await?;
+            trim_blueprint_to_requested_size(request, &mut blueprint_response.output);
+            if let Err(error) = validate_blueprint(request, &blueprint_response.output) {
+                let correction_prompt = format!(
+                    "{BLUEPRINT_SYSTEM_PROMPT}\n上一次蓝图未通过 Rust 数量或引用检查：{error}。请从原始 GenerationRequest 重新生成完整蓝图，角色必须恰好为 {} 个，真相变体必须恰好为 {} 个；不得返回补丁或空数组。",
+                    request.character_count, request.variant_count
+                );
+                let mut corrected = self
+                    .structured::<GeneratedCaseBlueprint>(&correction_prompt, request)
+                    .await?;
+                corrected.usage = blueprint_response.usage.combine(corrected.usage);
+                blueprint_response = corrected;
+            }
+            let mut blueprint = blueprint_response.output;
+            trim_blueprint_to_requested_size(request, &mut blueprint);
+            validate_blueprint(request, &blueprint)?;
+            usage = usage.combine(blueprint_response.usage);
+            checkpoint.blueprint = Some(blueprint.clone());
+            self.save_checkpoint(&checkpoint).await?;
+            blueprint
+        };
+
+        // Step 2: SharedContent
+        let shared_world = if let Some(sw) = &checkpoint.shared_world {
+            sw.clone()
+        } else {
+            self.report_progress(GenerationProgressStage::SharedContent, None, None)
+                .await?;
+            let shared_response = self
+                .structured::<GeneratedSharedWorldDraft>(
+                    SHARED_SYSTEM_PROMPT,
+                    &SharedGenerationInput {
+                        generation_request: request,
+                        blueprint: &blueprint,
+                    },
+                )
+                .await?;
+            let shared_world = shared_response.output;
+            usage = usage.combine(shared_response.usage);
+            checkpoint.shared_world = Some(shared_world.clone());
+            self.save_checkpoint(&checkpoint).await?;
+            shared_world
+        };
+
+        // Step 3: SharedCharacters
+        let shared_characters = if let Some(sc) = &checkpoint.shared_characters {
+            sc.clone()
+        } else {
+            let character_plans = blueprint.case.characters.clone();
+            let character_total = character_plans.len() as u32;
+            self.report_progress(
+                GenerationProgressStage::SharedCharacters,
+                Some(0),
+                Some(character_total),
             )
             .await?;
-        let shared_world = shared_response.output;
-        usage = usage.combine(shared_response.usage);
-
-        let character_plans = blueprint.case.characters.clone();
-        let character_total = character_plans.len() as u32;
-        self.report_progress(
-            GenerationProgressStage::SharedCharacters,
-            Some(0),
-            Some(character_total),
-        )
-        .await?;
-        let completed_characters = AtomicU32::new(0);
-        let mut character_responses = stream::iter(character_plans.into_iter().enumerate())
-            .map(|(index, selected_character)| {
-                let completed_characters = &completed_characters;
-                let shared_world = &shared_world;
-                let blueprint = &blueprint;
-                async move {
-                    let response: Result<_, ProviderError> = async {
-                        let response = self
-                            .structured::<GeneratedCharacterDraft>(
-                                CHARACTER_SYSTEM_PROMPT,
-                                &CharacterGenerationInput {
-                                    generation_request: request,
-                                    blueprint,
-                                    shared_world,
-                                    selected_character: &selected_character,
-                                },
+            let completed_characters = AtomicU32::new(0);
+            let mut character_responses = stream::iter(character_plans.into_iter().enumerate())
+                .map(|(index, selected_character)| {
+                    let completed_characters = &completed_characters;
+                    let shared_world = &shared_world;
+                    let blueprint = &blueprint;
+                    async move {
+                        let response: Result<_, ProviderError> = async {
+                            let response = self
+                                .structured::<GeneratedCharacterDraft>(
+                                    CHARACTER_SYSTEM_PROMPT,
+                                    &CharacterGenerationInput {
+                                        generation_request: request,
+                                        blueprint,
+                                        shared_world,
+                                        selected_character: &selected_character,
+                                    },
+                                )
+                                .await?;
+                            let completed = completed_characters.fetch_add(1, Ordering::SeqCst) + 1;
+                            self.report_progress(
+                                GenerationProgressStage::SharedCharacters,
+                                Some(completed),
+                                Some(character_total),
                             )
                             .await?;
-                        let completed = completed_characters.fetch_add(1, Ordering::SeqCst) + 1;
-                        self.report_progress(
-                            GenerationProgressStage::SharedCharacters,
-                            Some(completed),
-                            Some(character_total),
-                        )
-                        .await?;
-                        Ok(response)
+                            Ok(response)
+                        }
+                        .await;
+                        (index, selected_character, response)
                     }
-                    .await;
-                    (index, selected_character, response)
-                }
-            })
-            .buffer_unordered(CHARACTER_GENERATION_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        character_responses.sort_by_key(|(index, _, _)| *index);
+                })
+                .buffer_unordered(CHARACTER_GENERATION_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await;
+            character_responses.sort_by_key(|(index, _, _)| *index);
 
-        let mut shared_characters = Vec::with_capacity(character_responses.len());
-        for (_, plan, response) in character_responses {
-            let mut response = response?;
-            freeze_character_identity(&plan, &mut response.output.character)?;
-            usage = usage.combine(response.usage);
-            shared_characters.push(response.output.character);
-        }
+            let mut shared_characters = Vec::with_capacity(character_responses.len());
+            for (_, plan, response) in character_responses {
+                let mut response = response?;
+                freeze_character_identity(&plan, &mut response.output.character)?;
+                usage = usage.combine(response.usage);
+                shared_characters.push(response.output.character);
+            }
+            checkpoint.shared_characters = Some(shared_characters.clone());
+            self.save_checkpoint(&checkpoint).await?;
+            shared_characters
+        };
+
         let shared = GeneratedSharedCaseDraft {
             required_case_elements: shared_world.required_case_elements,
             shared_facts: shared_world.shared_facts,
@@ -489,64 +534,73 @@ impl OpenAiCompatibleCaseGenerationProvider {
             initial_player_knowledge: shared_world.initial_player_knowledge,
         };
 
-        let blueprint_ref = &blueprint;
-        let shared_ref = &shared;
-        let variant_plans = blueprint.case.variants.clone();
-        let variant_total = variant_plans.len() as u32;
-        self.report_progress(
-            GenerationProgressStage::Variants,
-            Some(0),
-            Some(variant_total),
-        )
-        .await?;
-        let completed_variants = AtomicU32::new(0);
-        let mut variant_responses = stream::iter(variant_plans.into_iter().enumerate())
-            .map(|(index, selected_variant)| {
-                let blueprint = blueprint_ref;
-                let shared = shared_ref;
-                let completed_variants = &completed_variants;
-                async move {
-                    let response: Result<_, ProviderError> = async {
-                        let response = self
-                            .structured::<GeneratedVariantDraft>(
-                                VARIANT_SYSTEM_PROMPT,
-                                &VariantGenerationInput {
-                                    generation_request: request,
-                                    blueprint,
-                                    shared,
-                                    selected_variant: &selected_variant,
-                                },
+        // Step 4: Variants
+        let variants = if let Some(v) = &checkpoint.variants {
+            v.clone()
+        } else {
+            let blueprint_ref = &blueprint;
+            let shared_ref = &shared;
+            let variant_plans = blueprint.case.variants.clone();
+            let variant_total = variant_plans.len() as u32;
+            self.report_progress(
+                GenerationProgressStage::Variants,
+                Some(0),
+                Some(variant_total),
+            )
+            .await?;
+            let completed_variants = AtomicU32::new(0);
+            let mut variant_responses = stream::iter(variant_plans.into_iter().enumerate())
+                .map(|(index, selected_variant)| {
+                    let blueprint = blueprint_ref;
+                    let shared = shared_ref;
+                    let completed_variants = &completed_variants;
+                    async move {
+                        let response: Result<_, ProviderError> = async {
+                            let response = self
+                                .structured::<GeneratedVariantDraft>(
+                                    VARIANT_SYSTEM_PROMPT,
+                                    &VariantGenerationInput {
+                                        generation_request: request,
+                                        blueprint,
+                                        shared,
+                                        selected_variant: &selected_variant,
+                                    },
+                                )
+                                .await?;
+                            let completed = completed_variants.fetch_add(1, Ordering::SeqCst) + 1;
+                            self.report_progress(
+                                GenerationProgressStage::Variants,
+                                Some(completed),
+                                Some(variant_total),
                             )
                             .await?;
-                        let completed = completed_variants.fetch_add(1, Ordering::SeqCst) + 1;
-                        self.report_progress(
-                            GenerationProgressStage::Variants,
-                            Some(completed),
-                            Some(variant_total),
-                        )
-                        .await?;
-                        Ok(response)
+                            Ok(response)
+                        }
+                        .await;
+                        (index, response)
                     }
-                    .await;
-                    (index, response)
-                }
-            })
-            .buffer_unordered(VARIANT_GENERATION_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        variant_responses.sort_by_key(|(index, _)| *index);
+                })
+                .buffer_unordered(VARIANT_GENERATION_CONCURRENCY)
+                .collect::<Vec<_>>()
+                .await;
+            variant_responses.sort_by_key(|(index, _)| *index);
 
-        let mut variants = Vec::with_capacity(variant_responses.len());
-        for ((_, response), plan) in variant_responses
-            .into_iter()
-            .zip(blueprint.case.variants.iter())
-        {
-            let mut response = response?;
-            normalize_variant_characters(&mut response.output, shared_ref);
-            usage = usage.combine(response.usage);
-            variants.push(variant_from_segment(plan, response.output));
-        }
+            let mut variants = Vec::with_capacity(variant_responses.len());
+            for ((_, response), plan) in variant_responses
+                .into_iter()
+                .zip(blueprint.case.variants.iter())
+            {
+                let mut response = response?;
+                normalize_variant_characters(&mut response.output, shared_ref);
+                usage = usage.combine(response.usage);
+                variants.push(variant_from_segment(plan, response.output));
+            }
+            checkpoint.variants = Some(variants.clone());
+            self.save_checkpoint(&checkpoint).await?;
+            variants
+        };
 
+        // Step 5: Assembling
         self.report_progress(GenerationProgressStage::Assembling, None, None)
             .await?;
 

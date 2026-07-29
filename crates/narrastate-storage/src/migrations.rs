@@ -107,6 +107,7 @@ pub const MIGRATIONS: &[&str] = &[
         updated_at TEXT NOT NULL
     )",
     "CREATE INDEX idx_case_generation_jobs_status ON case_generation_jobs(status, updated_at)",
+    "ALTER TABLE case_generation_jobs ADD COLUMN checkpoint_json TEXT",
 ];
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), super::StorageError> {
