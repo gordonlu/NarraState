@@ -33,7 +33,8 @@ use narrastate_core::session::{
 use narrastate_core::transition::{InterpretedAction, PlayerIntent, PlayerTone, TransitionTuning};
 use narrastate_core::{
     CaseManifest, CaseTemplate, GeneratedVisualType, GenerationCheckpoint, GenerationJobId,
-    GenerationLimits, GenerationRequest, GenerationStatus, Seed, VariantSelection,
+    GenerationLimits, GenerationRequest, GenerationStatus, InterrogationPhase, Seed,
+    VariantSelection,
 };
 use narrastate_provider::case_generation::OpenAiCompatibleCaseGenerationProvider;
 use narrastate_provider::image_generation::OpenAiCompatibleImageProvider;
@@ -2544,6 +2545,7 @@ async fn execute_action(
             .map_err(|error| ApiError::internal(error.to_string()))?;
         session.status = SessionStatus::Resolved;
     }
+    discover_evidence(&mut session, &case);
     session.revision = session.revision.saturating_add(1);
     let result = PublicTurnResult {
         session_id,
@@ -3177,6 +3179,42 @@ fn provider_error_code(error: &ProviderError) -> &'static str {
         ProviderError::ContextTooLong => "context_too_long",
         ProviderError::SafetyRejected => "safety_rejected",
         ProviderError::Unknown(_) => "unknown",
+    }
+}
+
+fn discover_evidence(session: &mut SessionState, case: &CaseDefinition) {
+    loop {
+        let all_confronted: BTreeSet<EvidenceId> = session
+            .character_states
+            .values()
+            .flat_map(|cs| cs.confronted_evidence.iter().cloned())
+            .collect();
+        let max_phase = session
+            .character_states
+            .values()
+            .map(|cs| cs.phase)
+            .max()
+            .unwrap_or(InterrogationPhase::Calm);
+        let already_discovered = session.discovered_evidence.clone();
+        let newly_discovered: Vec<EvidenceId> = case
+            .evidence
+            .iter()
+            .filter(|item| !already_discovered.contains(&item.id))
+            .filter(|item| {
+                item.discoverable_by.iter().any(|rule| match rule {
+                    DiscoveryRule::StartingEvidence => true,
+                    DiscoveryRule::AutomaticAtPhase { phase } => max_phase >= *phase,
+                    DiscoveryRule::AfterEvidencePresented { evidence_id } => {
+                        all_confronted.contains(evidence_id)
+                    }
+                })
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        if newly_discovered.is_empty() {
+            break;
+        }
+        session.discovered_evidence.extend(newly_discovered);
     }
 }
 
