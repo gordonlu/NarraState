@@ -4587,10 +4587,7 @@ mod tests {
             active_character: Some(char_id.clone()),
             discovered_facts: BTreeSet::new(),
             discovered_evidence: BTreeSet::from([ev_start.clone()]),
-            character_states: BTreeMap::from([(
-                char_id.clone(),
-                CharacterRuntimeState::new(50),
-            )]),
+            character_states: BTreeMap::from([(char_id.clone(), CharacterRuntimeState::new(50))]),
             conversation: vec![],
             accusations: vec![],
             revision: 0,
@@ -4601,23 +4598,40 @@ mod tests {
         assert!(!session.discovered_evidence.contains(&ev_phase));
 
         // Simulate presenting ev-start to the character
-        session.character_states.get_mut(&char_id).unwrap()
-            .confronted_evidence.insert(ev_start.clone());
+        session
+            .character_states
+            .get_mut(&char_id)
+            .unwrap()
+            .confronted_evidence
+            .insert(ev_start.clone());
 
         discover_evidence(&mut session, &case);
 
         // AfterEvidencePresented should now be discovered
-        assert!(session.discovered_evidence.contains(&ev_chained), "chained evidence after presentation");
+        assert!(
+            session.discovered_evidence.contains(&ev_chained),
+            "chained evidence after presentation"
+        );
         // AutomaticAtPhase should NOT be discovered (phase is still Calm)
-        assert!(!session.discovered_evidence.contains(&ev_phase), "phase-gated evidence before phase advance");
+        assert!(
+            !session.discovered_evidence.contains(&ev_phase),
+            "phase-gated evidence before phase advance"
+        );
 
         // Advance phase to Guarded
-        session.character_states.get_mut(&char_id).unwrap()
-            .set_phase(InterrogationPhase::Guarded, TurnId::new()).unwrap();
+        session
+            .character_states
+            .get_mut(&char_id)
+            .unwrap()
+            .set_phase(InterrogationPhase::Guarded, TurnId::new())
+            .unwrap();
         discover_evidence(&mut session, &case);
 
         // Now AutomaticAtPhase should also be discovered
-        assert!(session.discovered_evidence.contains(&ev_phase), "phase-gated evidence after phase advance");
+        assert!(
+            session.discovered_evidence.contains(&ev_phase),
+            "phase-gated evidence after phase advance"
+        );
     }
 
     #[tokio::test]
