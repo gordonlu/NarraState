@@ -2086,29 +2086,30 @@ async fn get_conclusion(
     }
     let case = case_for_session(&*state.repo, &session).await?;
 
-    let (result, decisive_evidence, reasoning, confessed) = if let Some(accusation) = session.accusations.last() {
-        let selected: BTreeSet<_> = accusation.evidence_ids.iter().collect();
-        let evidence = case
-            .evidence
-            .iter()
-            .filter(|item| selected.contains(&item.id))
-            .map(public_evidence)
-            .collect();
-        (
-            accusation.result.clone(),
-            evidence,
-            accusation.reasoning.clone(),
-            accusation.result == AccusationResult::CaseProvenWithConfession,
-        )
-    } else {
-        // Session resolved via dialogue confession (no accusation)
-        (
-            AccusationResult::CaseProvenWithConfession,
-            Vec::new(),
-            String::new(),
-            true,
-        )
-    };
+    let (result, decisive_evidence, reasoning, confessed) =
+        if let Some(accusation) = session.accusations.last() {
+            let selected: BTreeSet<_> = accusation.evidence_ids.iter().collect();
+            let evidence = case
+                .evidence
+                .iter()
+                .filter(|item| selected.contains(&item.id))
+                .map(public_evidence)
+                .collect();
+            (
+                accusation.result.clone(),
+                evidence,
+                accusation.reasoning.clone(),
+                accusation.result == AccusationResult::CaseProvenWithConfession,
+            )
+        } else {
+            // Session resolved via dialogue confession (no accusation)
+            (
+                AccusationResult::CaseProvenWithConfession,
+                Vec::new(),
+                String::new(),
+                true,
+            )
+        };
 
     Ok(Json(ConclusionResponse {
         result,
@@ -4315,12 +4316,7 @@ mod tests {
         execute_action(
             &state,
             session.session_id,
-            action(
-                0,
-                ClientActionId::new(),
-                &[],
-                "昨晚发生了什么？",
-            ),
+            action(0, ClientActionId::new(), &[], "昨晚发生了什么？"),
         )
         .await
         .unwrap();
@@ -4407,12 +4403,7 @@ mod tests {
         execute_action(
             &state,
             session.session_id,
-            action(
-                0,
-                ClientActionId::new(),
-                &[],
-                "昨晚发生了什么？",
-            ),
+            action(0, ClientActionId::new(), &[], "昨晚发生了什么？"),
         )
         .await
         .unwrap();

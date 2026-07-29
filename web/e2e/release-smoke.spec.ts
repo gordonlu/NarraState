@@ -35,7 +35,7 @@ test('app loads and completes the primary mock interaction', async ({ page }) =>
 
   await expect(page.getByText('闭馆后你在哪里？')).toBeVisible()
   await expect(page.locator('.transcript-turn:not(.player)')).toHaveCount(1)
-  await expect(page.locator('.transcript-turn:not(.player) p')).not.toBeEmpty()
+  await expect(page.locator('.transcript-turn:not(.player) .bubble-content')).not.toBeEmpty()
   await expect(page.locator('.research-footer')).toContainText('revision 1')
   expect(consoleProblems).toEqual([])
   if (screenshotDirectory) {
