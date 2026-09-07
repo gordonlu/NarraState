@@ -14,7 +14,7 @@ thiserror.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
 schemars.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 futures-util.workspace = true
 
 [dev-dependencies]
