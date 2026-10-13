@@ -62,6 +62,24 @@ pub fn validate_template(template: &CaseTemplate) -> CaseValidationReport {
             vec![],
         ));
     }
+    // The default variant is what the pipeline installs and every new session
+    // plays, so it must exist and survive the same compile + simulation gate as
+    // the enabled variants. Without this, a draft can pass validation and only
+    // fail later, after the generated package has already been written to disk.
+    if !enabled
+        .iter()
+        .any(|variant| &variant.id == &template.default_variant_id)
+    {
+        errors.push(error(
+            "SCHEMA_DEFAULT_VARIANT_INVALID",
+            "default_variant_id",
+            format!(
+                "default variant {} must exist and be enabled",
+                template.default_variant_id
+            ),
+            vec![template.default_variant_id.to_string()],
+        ));
+    }
 
     let mut compiled = BTreeMap::new();
     let mut variant_reports = Vec::new();

@@ -76,6 +76,53 @@ fn unsupported_schema_version_is_observable() {
 }
 
 #[test]
+fn template_without_an_enabled_default_variant_is_not_publishable() {
+    let mut template = adapt_v01(legacy_case(), "1.0.0", VariantId::from("classic")).unwrap();
+    template.solution_variants[0].enabled = false;
+
+    let report = validate_template(&template);
+
+    assert!(!report.valid);
+    let issue = report
+        .errors
+        .iter()
+        .find(|issue| issue.code == "SCHEMA_DEFAULT_VARIANT_INVALID")
+        .expect("the default variant must be validated");
+    assert_eq!(issue.path, "default_variant_id");
+    assert_eq!(issue.related_ids, vec!["classic".to_string()]);
+}
+
+#[test]
+fn template_whose_default_variant_does_not_exist_is_not_publishable() {
+    let mut template = adapt_v01(legacy_case(), "1.0.0", VariantId::from("classic")).unwrap();
+    template.default_variant_id = VariantId::from("missing-variant");
+
+    let report = validate_template(&template);
+
+    assert!(!report.valid);
+    assert!(report
+        .errors
+        .iter()
+        .any(|issue| issue.code == "SCHEMA_DEFAULT_VARIANT_INVALID"
+            && issue.related_ids == vec!["missing-variant".to_string()]));
+}
+
+#[test]
+fn publishable_template_keeps_a_valid_default_variant() {
+    let template = adapt_v01(legacy_case(), "1.0.0", VariantId::from("classic")).unwrap();
+
+    let report = validate_template(&template);
+
+    assert!(
+        !report
+            .errors
+            .iter()
+            .any(|issue| issue.code == "SCHEMA_DEFAULT_VARIANT_INVALID"),
+        "a checked-in golden template must keep publishing"
+    );
+}
+
+#[test]
 fn text_limit_counts_unicode_scalars_and_does_not_truncate() {
     let mut template = adapt_v01(legacy_case(), "1.0.0", VariantId::from("classic")).unwrap();
     template.summary = "案".repeat(narrastate_case::MAX_TEXT_CHARS + 1);

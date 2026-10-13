@@ -104,7 +104,7 @@ pub async fn run_generation_pipeline_with_id(
         }
 
         if run.repairs >= limits.max_repairs {
-            return Err(run.fail(
+            return Err(run.fail_with_issues(
                 "GENERATION_REPAIR_EXHAUSTED",
                 "draft remained invalid after the configured repair limit",
                 draft_issues,
@@ -260,6 +260,28 @@ impl PipelineRun {
         }
     }
 
+    /// Appends the stable issue codes that caused the failure to the message.
+    ///
+    /// Issues carry authoring field paths, so only the codes are surfaced: an
+    /// operator can see *which invariant* blocked publication without the job
+    /// record becoming a way to read the frozen truth.
+    fn fail_with_issues(
+        self,
+        code: &str,
+        message: &str,
+        issues: Vec<GenerationIssue>,
+    ) -> GenerationPipelineFailure {
+        let mut codes: Vec<String> = issues.iter().map(|issue| issue.code.clone()).collect();
+        codes.sort();
+        codes.dedup();
+        let message = if codes.is_empty() {
+            message.to_string()
+        } else {
+            format!("{message}: {}", codes.join(", "))
+        };
+        self.fail(code, &message, issues)
+    }
+
     fn provider_failure(self, error: ProviderError) -> GenerationPipelineFailure {
         self.provider_failure_with_issues(error, vec![])
     }
@@ -277,6 +299,6 @@ impl PipelineRun {
             _ => "GENERATION_PROVIDER_FAILED",
         };
         let message = error.to_string();
-        self.fail(code, &message, issues)
+        self.fail_with_issues(code, &message, issues)
     }
 }
