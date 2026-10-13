@@ -250,9 +250,9 @@
       "supports": [],
       "contradicts": ["claim_innocent"],
       "elements": ["Intent"],
-      "reliability": 0.6,
-      "directness": 0.5,
-      "exclusivity": 0.3,
+      "reliability": 0.7,
+      "directness": 0.6,
+      "exclusivity": 0.4,
       "discoverable_by": [{ "type": "StartingEvidence" }]
     },
     {
@@ -420,7 +420,7 @@
               },
               { "evidence": ["ev_mud_track", "ev_fiber"] }
             ],
-            "min_phase": "Cornered",
+            "min_phase": "Pressured",
             "response_intent": "PartialAdmission"
           },
           {
