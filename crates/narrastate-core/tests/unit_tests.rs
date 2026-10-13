@@ -695,10 +695,38 @@ fn test_transition_tuning_defaults_in_valid_range() {
     assert!((t.exclusivity_weight - 0.20).abs() < f32::EPSILON);
     assert!((t.proposition_match_weight - 0.15).abs() < f32::EPSILON);
     assert!((t.novelty_multiplier_first - 1.0).abs() < f32::EPSILON);
-    assert!((t.novelty_multiplier_repeat - 0.0).abs() < f32::EPSILON);
     assert!((t.chain_bonus - 0.15).abs() < f32::EPSILON);
     assert!((t.min_interpretation_multiplier - 0.5).abs() < f32::EPSILON);
     assert!((t.max_interpretation_multiplier - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_transition_tuning_keeps_the_gameplay_dials_playable() {
+    let t = TransitionTuning::default();
+    // Repeating a clue must still apply pressure, otherwise a player who has
+    // already shown everything can never escalate again.
+    assert!(
+        t.novelty_multiplier_repeat > 0.0,
+        "repeated evidence must keep some pressure"
+    );
+    assert!(
+        t.novelty_multiplier_repeat < t.novelty_multiplier_first,
+        "repeated evidence must stay weaker than first use"
+    );
+    // Batching several clues in one turn must out-pressure a single clue.
+    assert!(
+        t.turn_impact_ceiling_step > 0.0,
+        "batching clues must accumulate pressure"
+    );
+    assert!(
+        t.max_impact_per_turn > 1.0,
+        "one turn must be able to exceed single-clue pressure"
+    );
+    // A tougher character must not be immune to pressure.
+    assert!(
+        t.stress_per_impact_base - 100.0 * t.stress_resilience_reduction > 0.0,
+        "even the most resilient character must gain stress"
+    );
 }
 
 // ── Evidence decimal range ─────────────────────────────────────────────

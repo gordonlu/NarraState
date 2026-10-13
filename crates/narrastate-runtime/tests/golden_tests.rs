@@ -469,19 +469,35 @@ fn golden_g2_single_evidence_repeated_use() {
             &action,
             turn_id,
         );
-        // Stress should not increase (decayed novelty)
+        // Repeated evidence still bites, but each repeat is strictly weaker
+        // than the first presentation and bounded by the documented decay.
+        let gain = result
+            .diff
+            .stress_after
+            .saturating_sub(result.diff.stress_before);
         assert!(
-            result.diff.stress_after <= stress_after_first + 5u8,
-            "Turn {i}: stress shouldn't significantly increase from repeated evidence"
+            gain <= REPEAT_PRESSURE_CEILING,
+            "Turn {i}: repeat pressure must stay within the documented ceiling, got {gain}"
         );
     }
 
-    // Should not reach confession by repeating the same evidence
+    // Repeats alone must never escalate all the way to a confession.
     assert!(
         state.phase < InterrogationPhase::ConfessionEligible,
         "Cannot reach confession-eligible by repeating same evidence"
     );
+
+    // And the repeats must have applied real pressure, not zero.
+    assert!(
+        state.stress > stress_after_first,
+        "repeated evidence must still build some pressure"
+    );
 }
+
+/// Highest single-turn stress gain a repeated clue may add for a resilience 60
+/// character with the default tuning:
+/// `round(base 0.84 * novelty_repeat 0.25 * (stress_base 45 - 60 * 0.10))` = 8.
+const REPEAT_PRESSURE_CEILING: u8 = 8;
 
 // ── G3: Natural disclosure path (D1→D5) ────────────────────────────────
 
@@ -821,4 +837,251 @@ fn golden_g7_case_proven_without_confession() {
         .contains(&DisclosureId::from("d5_confession"));
     // The confession requires explicit trigger, so it should NOT be auto-unlocked
     // unless the final action triggered it
+}
+
+// ── G8: Pressure unlocks a whole chain in one turn ──────────────────────
+
+fn chain_graph(
+    nodes: Vec<(
+        DisclosureId,
+        DisclosureKind,
+        InterrogationPhase,
+        Vec<DisclosurePrerequisite>,
+    )>,
+) -> DisclosureGraph {
+    DisclosureGraph {
+        nodes: nodes
+            .into_iter()
+            .map(|(id, kind, min_phase, prerequisites)| DisclosureNode {
+                id,
+                kind,
+                reveals: vec![],
+                prerequisites,
+                min_phase,
+                response_intent: DialogueAct::PartialAdmission,
+            })
+            .collect(),
+    }
+}
+
+fn gated_chain() -> DisclosureGraph {
+    let d1 = DisclosureId::from("d1_presence");
+    let d2 = DisclosureId::from("d2_access");
+    let d3 = DisclosureId::from("d3_means");
+    chain_graph(vec![
+        (
+            d1.clone(),
+            DisclosureKind::Presence,
+            InterrogationPhase::Guarded,
+            vec![DisclosurePrerequisite::EvidencePresented {
+                evidence: vec![EvidenceId::from("ev_card_log")],
+            }],
+        ),
+        (
+            d2.clone(),
+            DisclosureKind::Access,
+            InterrogationPhase::Defensive,
+            vec![DisclosurePrerequisite::Disclosure { disclosure: d1 }],
+        ),
+        (
+            d3,
+            DisclosureKind::Means,
+            InterrogationPhase::Pressured,
+            vec![DisclosurePrerequisite::Disclosure { disclosure: d2 }],
+        ),
+        (
+            DisclosureId::from("d4_action"),
+            DisclosureKind::FullAction,
+            InterrogationPhase::Cornered,
+            vec![DisclosurePrerequisite::Disclosure {
+                disclosure: DisclosureId::from("d3_means"),
+            }],
+        ),
+    ])
+}
+
+#[test]
+fn golden_g8_one_phase_step_unlocks_every_satisfied_sibling_node() {
+    let mut fixture = build_fixture();
+    // Two nodes share the same phase floor, so a single escalation satisfies
+    // both at once and neither may be made to wait an extra turn.
+    fixture.culprit.disclosure_graph = chain_graph(vec![
+        (
+            DisclosureId::from("d1_presence"),
+            DisclosureKind::Presence,
+            InterrogationPhase::Guarded,
+            Vec::new(),
+        ),
+        (
+            DisclosureId::from("d2_access"),
+            DisclosureKind::Access,
+            InterrogationPhase::Defensive,
+            vec![DisclosurePrerequisite::Disclosure {
+                disclosure: DisclosureId::from("d1_presence"),
+            }],
+        ),
+        (
+            DisclosureId::from("d2_means"),
+            DisclosureKind::Means,
+            InterrogationPhase::Defensive,
+            vec![DisclosurePrerequisite::Disclosure {
+                disclosure: DisclosureId::from("d1_presence"),
+            }],
+        ),
+    ]);
+    let engine = create_engine();
+    let mut state = CharacterRuntimeState::new(fixture.culprit.resilience);
+
+    // Turn one: only enough for Guarded, so only the first node can land.
+    let turn_id = TurnId::new();
+    let action = make_action(
+        PlayerIntent::PresentEvidence,
+        vec![EvidenceId::from("ev_card_log")],
+        "门禁记录",
+    );
+    let first = engine.process(
+        &action,
+        &mut state,
+        &fixture.culprit,
+        &fixture.evidence,
+        &fixture.facts,
+        turn_id,
+    );
+    assert_eq!(
+        first.diff.newly_revealed_disclosures,
+        vec![DisclosureId::from("d1_presence")]
+    );
+
+    // Turn two: escalate to Defensive and both satisfied siblings must land.
+    let turn_id = TurnId::new();
+    let action = make_action(
+        PlayerIntent::PresentEvidence,
+        vec![EvidenceId::from("ev_sensor_cmd")],
+        "维护命令",
+    );
+    let second = engine.process(
+        &action,
+        &mut state,
+        &fixture.culprit,
+        &fixture.evidence,
+        &fixture.facts,
+        turn_id,
+    );
+    let mut unlocked = second.diff.newly_revealed_disclosures.clone();
+    unlocked.sort();
+    assert_eq!(
+        unlocked,
+        vec![
+            DisclosureId::from("d2_access"),
+            DisclosureId::from("d2_means")
+        ],
+        "the chain must not lag a full turn behind the pressure already built"
+    );
+}
+
+#[test]
+fn golden_g8_a_starved_chain_catches_up_in_one_turn() {
+    let mut fixture = build_fixture();
+    // d1 is gated behind a clue the player has not handed over yet.
+    fixture.culprit.disclosure_graph = gated_chain();
+    let engine = create_engine();
+    let mut state = CharacterRuntimeState::new(fixture.culprit.resilience);
+
+    // Build pressure with a clue that never satisfies d1.
+    for _ in 0..3 {
+        let turn_id = TurnId::new();
+        let action = make_action(
+            PlayerIntent::PresentEvidence,
+            vec![EvidenceId::from("ev_fiber")],
+            "纤维",
+        );
+        let _result = engine.process(
+            &action,
+            &mut state,
+            &fixture.culprit,
+            &fixture.evidence,
+            &fixture.facts,
+            turn_id,
+        );
+    }
+    assert!(
+        state.phase >= InterrogationPhase::Pressured,
+        "fixture should already be deep in the escalation, got {:?}",
+        state.phase
+    );
+
+    // A fresh clue satisfies d1, and the whole chain behind it unlocks now.
+    let turn_id = TurnId::new();
+    let action = make_action(
+        PlayerIntent::PresentEvidence,
+        vec![EvidenceId::from("ev_card_log")],
+        "门禁记录",
+    );
+    let result = engine.process(
+        &action,
+        &mut state,
+        &fixture.culprit,
+        &fixture.evidence,
+        &fixture.facts,
+        turn_id,
+    );
+
+    assert!(
+        result.diff.newly_revealed_disclosures.len() > 1,
+        "a decisive turn should unlock more than one satisfied node, got {:?}",
+        result.diff.newly_revealed_disclosures
+    );
+    for id in &result.diff.newly_revealed_disclosures {
+        let node = fixture
+            .culprit
+            .disclosure_graph
+            .nodes
+            .iter()
+            .find(|node| &node.id == id)
+            .expect("revealed node exists");
+        for prerequisite in &node.prerequisites {
+            if let DisclosurePrerequisite::Disclosure { disclosure } = prerequisite {
+                assert!(
+                    state.revealed_disclosures.contains(disclosure),
+                    "{id} revealed before its prerequisite {disclosure:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn golden_g8_repeated_clue_pressure_cannot_reach_confession() {
+    let fixture = build_fixture();
+    let engine = create_engine();
+    let planner = create_planner();
+    let renderer = create_renderer();
+    let mut state = CharacterRuntimeState::new(fixture.culprit.resilience);
+
+    for _ in 0..12 {
+        let turn_id = TurnId::new();
+        let action = make_action(
+            PlayerIntent::PresentEvidence,
+            vec![EvidenceId::from("ev_card_log")],
+            "还是门禁记录",
+        );
+        let _result = run_turn(
+            &engine,
+            &planner,
+            &renderer,
+            &fixture.culprit,
+            &mut state,
+            &fixture.evidence,
+            &fixture.facts,
+            &action,
+            turn_id,
+        );
+    }
+
+    assert!(!state.revealed_disclosures.contains(&DisclosureId::from("d5_confession")));
+    assert!(
+        state.phase < InterrogationPhase::ConfessionEligible,
+        "repeating one clue must not reach the confession phase, got {:?}",
+        state.phase
+    );
 }

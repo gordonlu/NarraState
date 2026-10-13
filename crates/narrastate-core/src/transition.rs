@@ -58,7 +58,6 @@ pub struct TransitionTuning {
     pub exclusivity_weight: f32,
     pub proposition_match_weight: f32,
     pub novelty_multiplier_first: f32,
-    pub novelty_multiplier_repeat: f32,
     pub chain_bonus: f32,
     pub min_interpretation_multiplier: f32,
     pub max_interpretation_multiplier: f32,
@@ -69,6 +68,20 @@ pub struct TransitionTuning {
     pub composure_per_impact: f32,
     pub trust_range_min: i32,
     pub trust_range_max: i32,
+
+    /// Multiplier applied to evidence the character has already been shown.
+    /// Must stay above zero so a player who has already presented everything
+    /// can still build pressure instead of dead-ending.
+    pub novelty_multiplier_repeat: f32,
+
+    /// Extra per-turn impact allowed for each additional *relevant* piece of
+    /// evidence past the first. One turn that presents several clues must not
+    /// deliver the same pressure as a turn that presents a single clue,
+    /// otherwise "dump everything at once" silently stalls the investigation.
+    pub turn_impact_ceiling_step: f32,
+
+    /// Ceiling applied to the per-turn impact accumulation.
+    pub max_impact_per_turn: f32,
 }
 
 impl Default for TransitionTuning {
@@ -79,16 +92,18 @@ impl Default for TransitionTuning {
             exclusivity_weight: 0.20,
             proposition_match_weight: 0.15,
             novelty_multiplier_first: 1.0,
-            novelty_multiplier_repeat: 0.0,
+            novelty_multiplier_repeat: 0.25,
             chain_bonus: 0.15,
             min_interpretation_multiplier: 0.5,
             max_interpretation_multiplier: 1.0,
-            stress_per_impact_base: 35.0,
-            stress_resilience_reduction: 0.15,
+            stress_per_impact_base: 45.0,
+            stress_resilience_reduction: 0.10,
             defense_per_impact: 30.0,
             composure_per_impact: 20.0,
             trust_range_min: -10,
             trust_range_max: 8,
+            turn_impact_ceiling_step: 0.5,
+            max_impact_per_turn: 3.0,
         }
     }
 }

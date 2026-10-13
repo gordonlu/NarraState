@@ -52,6 +52,7 @@ impl EvidenceEvaluator {
         let mut total_base = 0.0f32;
         let mut total_chain = 0.0f32;
         let mut any_novel = false;
+        let mut impactful_pieces = 0usize;
         let mut newly_contradicted = BTreeSet::new();
 
         let previously_invalidated = invalidated_claims(character, &state.confronted_evidence);
@@ -106,6 +107,9 @@ impl EvidenceEvaluator {
             total_base += base;
             total_chain += chain;
             any_novel |= novel;
+            if impact > 0.0 {
+                impactful_pieces = impactful_pieces.saturating_add(1);
+            }
 
             if novel && explicitly_mapped && action.confidence >= CONTRADICTION_CONFIDENCE {
                 for claim in relevant_claims {
@@ -116,7 +120,12 @@ impl EvidenceEvaluator {
             }
         }
 
-        total_impact = total_impact.clamp(0.0, 1.0);
+        total_impact = clamp_turn_impact(
+            total_impact,
+            impactful_pieces,
+            self.tuning.max_impact_per_turn,
+            self.tuning.turn_impact_ceiling_step,
+        );
         let trust_delta = match action.tone {
             narrastate_core::PlayerTone::Aggressive => -5,
             narrastate_core::PlayerTone::Accusatory => -8,
@@ -224,6 +233,20 @@ pub fn covered_elements(
         .collect()
 }
 
+/// Bounds how much pressure one player turn can deliver.
+///
+/// A turn that presents a single clue stays capped at `1.0`. Every further
+/// clue that actually lands raises the ceiling by `step`, up to `max`, so a
+/// player who attaches their whole evidence list to one question still advances
+/// the interrogation instead of hitting an invisible wall.
+pub fn clamp_turn_impact(raw: f32, impactful_pieces: usize, max: f32, step: f32) -> f32 {
+    if impactful_pieces <= 1 {
+        return raw.clamp(0.0, 1.0);
+    }
+    let ceiling = (1.0 + step * (impactful_pieces.saturating_sub(1)) as f32).min(max);
+    raw.clamp(0.0, ceiling)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn next_phase(
     current: InterrogationPhase,
@@ -236,24 +259,29 @@ fn next_phase(
     intent: PlayerIntent,
 ) -> InterrogationPhase {
     use InterrogationPhase::*;
+    let decisive = elements_complete && action_disclosed && intent == PlayerIntent::Challenge;
     match current {
-        Calm if stress >= 15 || cracks > 0 || matches!(intent, PlayerIntent::Accuse) => Guarded,
-        Guarded
-            if stress >= 30
-                || cracks >= 1
-                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+        Calm
+            if stress >= CALM_TO_GUARDED_STRESS
+                || cracks > 0
+                || matches!(intent, PlayerIntent::Accuse) =>
         {
-            Defensive
+            Guarded
         }
+        Guarded if stress >= GUARDED_TO_DEFENSIVE_STRESS || cracks >= 1 || decisive => Defensive,
         Defensive
-            if (stress >= 50 && defense <= 65)
-                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+            if (stress >= DEFENSIVE_TO_PRESSURED_STRESS
+                && defense <= DEFENSIVE_TO_PRESSURED_DEFENSE)
+                || cracks >= 2
+                || decisive =>
         {
             Pressured
         }
         Pressured
-            if (stress >= 70 && cracks >= 2)
-                || (elements_complete && action_disclosed && intent == PlayerIntent::Challenge) =>
+            if (stress >= PRESSURED_TO_CORNERED_STRESS
+                && defense <= PRESSURED_TO_CORNERED_DEFENSE)
+                || (stress >= PRESSURED_TO_CORNERED_FALLBACK_STRESS && cracks >= 2)
+                || decisive =>
         {
             Cornered
         }
@@ -264,9 +292,27 @@ fn next_phase(
     }
 }
 
+/// Stress needed to move out of Calm once the player starts pressing.
+const CALM_TO_GUARDED_STRESS: u8 = 10;
+/// Stress needed to reach Defensive.
+const GUARDED_TO_DEFENSIVE_STRESS: u8 = 25;
+/// Stress + remaining defence budget needed to reach Pressured.
+const DEFENSIVE_TO_PRESSURED_STRESS: u8 = 40;
+const DEFENSIVE_TO_PRESSURED_DEFENSE: u8 = 70;
+/// Stress + remaining defence budget needed to reach Cornered.
+const PRESSURED_TO_CORNERED_STRESS: u8 = 55;
+const PRESSURED_TO_CORNERED_DEFENSE: u8 = 50;
+/// Higher stress path into Cornered for resilient characters with a low budget.
+const PRESSURED_TO_CORNERED_FALLBACK_STRESS: u8 = 70;
+
 #[cfg(test)]
 mod tests {
     use super::next_phase;
+    use super::{
+        CALM_TO_GUARDED_STRESS, DEFENSIVE_TO_PRESSURED_DEFENSE, DEFENSIVE_TO_PRESSURED_STRESS,
+        PRESSURED_TO_CORNERED_DEFENSE, PRESSURED_TO_CORNERED_FALLBACK_STRESS,
+        PRESSURED_TO_CORNERED_STRESS,
+    };
     use narrastate_core::{InterrogationPhase, PlayerIntent};
 
     #[test]
@@ -315,5 +361,149 @@ mod tests {
         );
 
         assert_eq!(next, InterrogationPhase::Defensive);
+    }
+
+    #[test]
+    fn calm_opens_up_under_modest_pressure() {
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Calm,
+                CALM_TO_GUARDED_STRESS,
+                100,
+                0,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Guarded
+        );
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Calm,
+                CALM_TO_GUARDED_STRESS - 1,
+                100,
+                0,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Calm
+        );
+    }
+
+    #[test]
+    fn pressured_phase_is_reachable_with_weakened_defence_only() {
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Defensive,
+                DEFENSIVE_TO_PRESSURED_STRESS,
+                DEFENSIVE_TO_PRESSURED_DEFENSE,
+                0,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Pressured
+        );
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Defensive,
+                PRESSURED_TO_CORNERED_FALLBACK_STRESS,
+                100,
+                2,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Pressured
+        );
+    }
+
+    #[test]
+    fn cornered_phase_is_reachable_without_a_full_stress_cap() {
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Pressured,
+                PRESSURED_TO_CORNERED_STRESS,
+                PRESSURED_TO_CORNERED_DEFENSE,
+                0,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Cornered
+        );
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Pressured,
+                PRESSURED_TO_CORNERED_STRESS,
+                100,
+                0,
+                false,
+                false,
+                true,
+                PlayerIntent::Ask,
+            ),
+            InterrogationPhase::Pressured
+        );
+    }
+
+    #[test]
+    fn confession_eligible_still_requires_the_full_evidence_and_action_gate() {
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Cornered,
+                100,
+                0,
+                2,
+                true,
+                false,
+                true,
+                PlayerIntent::Challenge,
+            ),
+            InterrogationPhase::Cornered
+        );
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Cornered,
+                100,
+                0,
+                2,
+                true,
+                true,
+                false,
+                PlayerIntent::Challenge,
+            ),
+            InterrogationPhase::Cornered
+        );
+        assert_eq!(
+            next_phase(
+                InterrogationPhase::Cornered,
+                100,
+                0,
+                2,
+                true,
+                true,
+                true,
+                PlayerIntent::Challenge,
+            ),
+            InterrogationPhase::ConfessionEligible
+        );
+    }
+
+    #[test]
+    fn turn_impact_ceiling_grows_with_the_number_of_clues_presented() {
+        use super::clamp_turn_impact;
+
+        assert_eq!(clamp_turn_impact(4.0, 1, 3.0, 0.5), 1.0);
+        assert_eq!(clamp_turn_impact(4.0, 2, 3.0, 0.5), 1.5);
+        assert_eq!(clamp_turn_impact(4.0, 3, 3.0, 0.5), 2.0);
+        assert_eq!(clamp_turn_impact(9.0, 9, 3.0, 0.5), 3.0);
+        assert_eq!(clamp_turn_impact(0.0, 5, 3.0, 0.5), 0.0);
     }
 }

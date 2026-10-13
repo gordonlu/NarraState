@@ -4433,6 +4433,7 @@ mod tests {
                 .character_states
                 .get(&CharacterId::from("luo-cheng"))
                 .unwrap();
+            // The chain advances every turn and never skips a node.
             assert_eq!(runtime.revealed_disclosures.len(), index + 1);
             assert!(!runtime
                 .revealed_disclosures

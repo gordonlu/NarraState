@@ -110,13 +110,17 @@ impl TransitionEngine {
         let elements_complete = required_elements.is_subset(&coverage);
         let effective_turn = evaluation.impact.is_some()
             || !evaluation.newly_contradicted_claims.is_empty()
-            || (elements_complete && action.intent == PlayerIntent::Challenge)
+            || (elements_complete
+                && matches!(
+                    action.intent,
+                    PlayerIntent::Challenge | PlayerIntent::Accuse
+                ))
             || (state.phase == InterrogationPhase::ConfessionEligible
                 && matches!(
                     action.intent,
-                    PlayerIntent::Accuse | PlayerIntent::Challenge | PlayerIntent::PresentEvidence
+                    PlayerIntent::Accuse | PlayerIntent::Challenge
                 ));
-        let newly_revealed = self.unlock_one(
+        let newly_revealed = self.unlock_available(
             action,
             state,
             character,
@@ -124,7 +128,7 @@ impl TransitionEngine {
             elements_complete,
             effective_turn,
         );
-        let transition_reason = if newly_revealed.is_some() {
+        let transition_reason = if !newly_revealed.is_empty() {
             Some(TransitionReason::DisclosurePrerequisitesMet)
         } else {
             evaluation.transition_reason
@@ -149,7 +153,15 @@ impl TransitionEngine {
         }
     }
 
-    fn unlock_one(
+    /// Reveals every disclosure whose prerequisites the player has already met.
+    ///
+    /// The graph is still the only path to a confession: each node must satisfy
+    /// its own prerequisites, phase floor, and evidence/claim requirements, and
+    /// the confession node additionally needs the phase to be
+    /// `ConfessionEligible`, full element coverage, and a decisive player turn.
+    /// What changed is that the chain no longer lags one full turn behind the
+    /// pressure the player has already built.
+    fn unlock_available(
         &self,
         action: &InterpretedAction,
         state: &mut CharacterRuntimeState,
@@ -157,42 +169,44 @@ impl TransitionEngine {
         invalidated_claims: &BTreeSet<ClaimId>,
         elements_complete: bool,
         effective_turn: bool,
-    ) -> Option<DisclosureId> {
+    ) -> Vec<DisclosureId> {
         if !effective_turn {
-            return None;
+            return Vec::new();
         }
         let graph = &character.disclosure_graph;
-        let candidate = graph.nodes.iter().find(|node| {
-            if node.kind == DisclosureKind::Confession
-                && (!elements_complete
-                    || state.phase != InterrogationPhase::ConfessionEligible
-                    || !matches!(
-                        action.intent,
-                        PlayerIntent::Accuse
-                            | PlayerIntent::Challenge
-                            | PlayerIntent::PresentEvidence
-                    ))
-            {
-                return false;
-            }
-            graph.is_unlockable_with_context(
-                &node.id,
-                &state.revealed_disclosures,
-                state.phase,
-                &state.confronted_evidence,
-                invalidated_claims,
-            ) && node
-                .prerequisites
-                .iter()
-                .all(|prerequisite| match prerequisite {
-                    DisclosurePrerequisite::EvidencePresented { evidence } => evidence
-                        .iter()
-                        .all(|id| state.confronted_evidence.contains(id)),
-                    _ => true,
-                })
-        })?;
-        let id = candidate.id.clone();
-        state.reveal_disclosure(id.clone());
-        Some(id)
+        let mut revealed = Vec::new();
+        while revealed.len() < graph.nodes.len() {
+            let candidate = graph.nodes.iter().find(|node| {
+                if node.kind == DisclosureKind::Confession
+                    && (!elements_complete
+                        || state.phase != InterrogationPhase::ConfessionEligible
+                        || !matches!(
+                            action.intent,
+                            PlayerIntent::Accuse | PlayerIntent::Challenge
+                        ))
+                {
+                    return false;
+                }
+                graph.is_unlockable_with_context(
+                    &node.id,
+                    &state.revealed_disclosures,
+                    state.phase,
+                    &state.confronted_evidence,
+                    invalidated_claims,
+                ) && node
+                    .prerequisites
+                    .iter()
+                    .all(|prerequisite| match prerequisite {
+                        DisclosurePrerequisite::EvidencePresented { evidence } => evidence
+                            .iter()
+                            .all(|id| state.confronted_evidence.contains(id)),
+                        _ => true,
+                    })
+            });
+            let Some(node) = candidate else { break };
+            revealed.push(node.id.clone());
+            state.reveal_disclosure(node.id.clone());
+        }
+        revealed
     }
 }
