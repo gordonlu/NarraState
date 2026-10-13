@@ -80,6 +80,62 @@ async fn repair_exhaustion_is_explicit_and_never_publishes() {
 }
 
 #[tokio::test]
+async fn repair_exhaustion_names_the_invariants_that_blocked_publication() {
+    let invalid = GeneratedCaseDraft {
+        generation_request: request(),
+        schema_version: "0.2".into(),
+        case: DraftCaseTemplate::default(),
+    };
+    let provider = MockCaseGenerationProvider::new(vec![
+        Ok(invalid.clone()),
+        Ok(invalid.clone()),
+        Ok(invalid),
+    ]);
+
+    let failure = run_generation_pipeline(&provider, request(), GenerationLimits::default())
+        .await
+        .unwrap_err();
+
+    // The operator must be able to tell *which* invariant failed without the
+    // message leaking authoring field paths or the frozen truth.
+    assert!(
+        failure.message.contains("DRAFT_REQUIRED_FIELD_MISSING")
+            && failure.message.contains("DRAFT_VARIANT_COUNT_MISMATCH"),
+        "expected the blocking issue codes, got: {}",
+        failure.message
+    );
+    assert!(
+        !failure.message.contains("solution_variants["),
+        "issue paths must stay out of the failure message: {}",
+        failure.message
+    );
+}
+
+#[tokio::test]
+async fn provider_failure_during_repair_names_the_invariants_that_triggered_it() {
+    let invalid = GeneratedCaseDraft {
+        generation_request: request(),
+        schema_version: "0.2".into(),
+        case: DraftCaseTemplate::default(),
+    };
+    let provider = MockCaseGenerationProvider::new(vec![
+        Ok(invalid),
+        Err(ProviderError::InvalidResponse("bad repair shape".into())),
+    ]);
+
+    let failure = run_generation_pipeline(&provider, request(), GenerationLimits::default())
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, "GENERATION_PROVIDER_INVALID_RESPONSE");
+    assert!(
+        failure.message.contains("DRAFT_REQUIRED_FIELD_MISSING"),
+        "expected the triggering issue codes, got: {}",
+        failure.message
+    );
+}
+
+#[tokio::test]
 async fn provider_timeout_and_empty_response_queue_are_explicit() {
     let timeout = MockCaseGenerationProvider::new(vec![Err(ProviderError::Timeout)]);
     let failure = run_generation_pipeline(&timeout, request(), GenerationLimits::default())

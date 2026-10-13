@@ -1187,6 +1187,11 @@ async fn complete_generation_job(
                     .map(|output| output.manifest.clone())
                     .collect(),
             };
+            // Nothing may be written to the package root before the default
+            // variant compiles, otherwise a rejected template leaves an orphaned
+            // package behind that the case index never references.
+            let default = compile(&success.template, &success.template.default_variant_id)
+                .map_err(|report| ApiError::internal(report.to_string()))?;
             let installed = match install_inline_package_with_visuals(
                 &manifest,
                 &success.template,
@@ -4227,6 +4232,78 @@ mod tests {
             .is_some_and(|status| !status.requested && status.state == "not_requested"));
         assert!(root.join("rain-gallery-variants/1.0.1/case.json").is_file());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn generation_api_rejects_unplayable_default_variant_without_writing_a_package() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cases/rain-gallery-variants");
+        let package = load_case_package(source).unwrap();
+        let request = GenerationRequest {
+            theme: "画廊失窃".into(),
+            setting: "现代画廊".into(),
+            tone: narrastate_core::NarrativeTone::Realistic,
+            target_duration_minutes: 45,
+            difficulty: narrastate_core::Difficulty::Medium,
+            character_count: 3,
+            variant_count: 3,
+            realism: narrastate_core::RealismLevel::Grounded,
+            confession_policy: narrastate_core::ConfessionPolicy::PartialThenFull,
+            content_constraints: vec![],
+            language: "zh-CN".into(),
+        };
+        // The default variant is disabled: it can never be played, so the
+        // pipeline must refuse the draft before anything is installed.
+        let mut draft = narrastate_case::draft_from_template(request.clone(), &package.template);
+        let default = draft.case.default_variant_id.clone().unwrap().to_string();
+        for variant in &mut draft.case.solution_variants {
+            if variant.id.as_ref().is_some_and(|id| id.to_string() == default) {
+                variant.enabled = Some(false);
+            }
+        }
+        let root = std::env::temp_dir().join(format!("narrastate-generation-{}", Uuid::new_v4()));
+        let repo = Arc::new(SqliteRepository::new_in_memory().await.unwrap());
+        let state = Arc::new(AppState::with_install_root(repo, root.clone()));
+        *state.generation_provider_override.write().await = Some(Arc::new(
+            narrastate_runtime::mock::MockCaseGenerationProvider::new(vec![Ok(draft)]),
+        ));
+
+        let pending = create_generation_job(
+            State(state.clone()),
+            Json(CreateGenerationJobRequest {
+                request,
+                generate_visuals: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let id = GenerationJobId(Uuid::parse_str(pending["job_id"].as_str().unwrap()).unwrap());
+        let failed = loop {
+            let stored = state.repo.load_generation_job(&id).await.unwrap();
+            if stored.status.is_terminal() {
+                break generation_job_json(&stored).unwrap();
+            }
+            tokio::task::yield_now().await;
+        };
+
+        assert_eq!(failed["status"], "failed");
+        let report = failed.to_string();
+        assert!(
+            report.contains("SCHEMA_DEFAULT_VARIANT_INVALID"),
+            "the failure must name the violated invariant: {report}"
+        );
+        assert!(state
+            .repo
+            .load_case(&CaseId::from("rain-gallery-variants"))
+            .await
+            .is_err());
+        assert!(state.repo.list_installed_cases().await.unwrap().is_empty());
+        assert!(
+            !root.join("rain-gallery-variants").exists(),
+            "a rejected draft must not leave a package behind"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
